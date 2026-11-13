@@ -1,0 +1,27 @@
+{
+  "id": "com.youtubeplus.leanback",
+  "version": "1.0.0",
+  "vendor": "YouTube + (unofficial)",
+  "type": "web",
+  "main": "index.html",
+  "title": "YouTube +",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "mediumLargeIcon": "mediumLargeIcon.png",
+  "extraLargeIcon": "extraLargeIcon.png",
+  "playIcon": "playIcon.png",
+  "iconColor": "#ffffff",
+  "splashBackground": "splashBackground.png",
+  "imageForRecents": "imageForRecents.png",
+  "bgImage": "splashBackground.png",
+  "checkUpdateOnLaunch": false,
+  "vendorExtension": {
+    "userAgent": "$browserName$/$browserVersion$ ($platformName$-$platformVersion$), _TV_O18/$firmwareVersion$ (LG, $modelName$, $networkMode$)",
+    "allowCrossDomain": true
+  },
+  "deeplinkingParams": "{\"contentTarget\":\"v=$CONTENTID\"}",
+  "trustLevel": "netcast",
+  "privilegedJail": true,
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": true
+}

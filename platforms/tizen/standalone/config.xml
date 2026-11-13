@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  YouTube + standalone Tizen widget (scaffold). Derived from TizenTube's
+  standalone/config.xml (GPL-3.0). build_platforms.py tizen-standalone copies
+  TizenTube's standalone index.html + service into build/tizen-standalone and
+  patches them to also load youtube-plus.js; this file and the icons replace
+  TizenTube's branding. Package/app ids are new so it installs next to
+  TizenTube. Change YTPlus0001 to your own 10-char package id if you like.
+-->
+<widget xmlns:tizen="http://tizen.org/ns/widgets" xmlns="http://www.w3.org/ns/widgets" id="https://github.com/mistermassacre/mutube" version="1.0.0" viewmodes="maximized">
+    <access origin="*" subdomains="true"></access>
+    <tizen:allow-navigation href="*"/>
+    <tizen:application id="YTPlus0001.YouTubePlus" package="YTPlus0001" required_version="3.0"/>
+    <content src="index.html"/>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <feature name="http://tizen.org/feature/web.service"/>
+    <icon src="icon_16b9.png" width="1920" height="1080"/>
+    <icon src="icon.png" width="512" height="512"/>
+    <name>YouTube +</name>
+    <tizen:metadata key="http://samsung.com/tv/metadata/prelaunch.support" value="true"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/use.game.mode" value="true"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/html5.4k.support" value="true"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/pkgid" value="com.samsung.tv.cobalt"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/nativeID" value="com.samsung.tv.cobalt-yt"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/native.userdata" value="--base_url=https://www.youtube.com/tv --proxy=http://127.0.0.2:8101 --content=/home/owner/share/tizentube-content --dial_name=TizenTube --use_eden"/>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:privilege name="http://tizen.org/privilege/unlimitedstorage"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+    <tizen:profile name="tv-samsung"/>
+    <tizen:service id="YTPlus0001.StandaloneService" auto-restart="true" on-boot="true">
+        <tizen:content src="service/dist/index.js"/>
+        <tizen:name>StandaloneService</tizen:name>
+        <tizen:description>YouTube + service (TizenTube standalone service)</tizen:description>
+    </tizen:service>
+    <tizen:setting screen-orientation="landscape" context-menu="enable" background-support="enable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

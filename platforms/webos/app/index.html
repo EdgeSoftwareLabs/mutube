@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>YouTube +</title>
+<script>
+// Minimal launcher modelled on webosbrew/youtube-webos src/utils.js handleLaunch():
+// open the YouTube TV web client. webOS then injects
+// webOSUserScripts/userScript.js (youtube-plus.js) into that page.
+(function () {
+  var url = 'https://www.youtube.com/tv?env_forceFullAnimation=1&env_enableWebSpeech=1&env_enableVoice=1';
+  var params = {};
+  try { params = window.launchParams ? JSON.parse(window.launchParams) : {}; } catch (e) { params = {}; }
+  var target = params.target || params.contentTarget;
+  if (typeof target === 'string') {
+    if (target.indexOf('https://www.youtube.com/') === 0) {
+      url = target;
+    } else {
+      if (target.indexOf('v=v=') === 0) target = target.substring(2);
+      url += '&' + target;
+    }
+  }
+  window.location.href = url.indexOf('#') === -1 ? url + '#/' : url;
+})();
+</script>
+</head>
+<body style="background:#0f0f0f"></body>
+</html>

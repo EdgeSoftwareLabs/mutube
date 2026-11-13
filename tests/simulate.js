@@ -49,7 +49,7 @@ win._yttv.b = { mappings: { get: function (n) { return n === 'KabukiInnerTubeCli
 
 var ctx = vm.createContext({ window: win, JSON: JSON, setInterval: function (fn) { fn(); return 0; }, clearInterval: function () {}, setTimeout: setTimeout, clearTimeout: clearTimeout, console: console });
 win.JSON = ctx.JSON = JSON;
-vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'youtube-plus.js'), 'utf8'), ctx);
+vm.runInContext(fs.readFileSync(process.env.YTPLUS_FILE || path.join(__dirname, '..', 'youtube-plus.js'), 'utf8'), ctx);
 var YP = win.YouTubePlus;
 
 // Simulate TizenTube wrapping JSON.parse AFTER us (it loads async).

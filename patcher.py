@@ -7,8 +7,13 @@
 # ]
 # ///
 import argparse
+import json
+import plistlib
+import re
+import shutil
 import subprocess
 import struct
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -16,6 +21,8 @@ from pathlib import Path
 import lief
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
 
+APP_DISPLAY_NAME = "YouTube +"
+DEFAULT_YTPLUS_URL = "https://cdn.jsdelivr.net/gh/mistermassacre/mutube@youtube-plus/youtube-plus.js"
 YTTV_NEEDLE = b"yttv"
 CSP_PREFIX = b"sponsorblock.inf.re sponsor.ajay.app dearrow-thumb.ajay.app cdn.jsdelivr.net "
 LOG_HTML_ENTRY = b"MUTUBE_HTMLSCRIPT ra=%p\n"
@@ -165,16 +172,48 @@ def restore_regs():
     return out
 
 
-def load_payload():
-    # Payload is source-of-truth JS kept in a dedicated file.
-    # Ignore full-line // comments so notes can live in inject.js without
+def _strip_line_comments(text):
+    # Ignore full-line // comments so notes can live in the JS sources without
     # being embedded into the runtime payload.
-    text = Path(__file__).with_name("inject.js").read_text(encoding="ascii")
     lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
-    cleaned = "\n".join(lines).strip()
-    if not cleaned:
+    return "\n".join(lines).strip()
+
+
+def _minify_ytplus(text):
+    # Very conservative shrink for youtube-plus.js: drop /* */ blocks (the file
+    # never contains "/*" inside strings or regexes), full-line // comments and
+    # leading indentation. Line breaks are kept so trailing // comments and
+    # ASI behave exactly as in the source.
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def load_payload(embed_ytplus=True, ytplus_url=None):
+    # Payload is source-of-truth JS kept in dedicated files:
+    #   youtube-plus.js (optional, embedded first so window.YouTubePlus exists)
+    #   inject.js       (TizenTube loader + 4K fix; loads youtube-plus.js from
+    #                    ytplus_url when it was not embedded)
+    here = Path(__file__).parent
+    inject = _strip_line_comments((here / "inject.js").read_text(encoding="ascii"))
+    if not inject:
         raise ValueError("inject.js is empty")
-    return cleaned.encode("ascii")
+    if ytplus_url:
+        inject = inject.replace(DEFAULT_YTPLUS_URL, ytplus_url)
+    parts = []
+    if embed_ytplus:
+        ytplus = _minify_ytplus((here / "youtube-plus.js").read_text(encoding="ascii"))
+        if not ytplus:
+            raise ValueError("youtube-plus.js is empty")
+        parts.append(ytplus + ";")
+    parts.append(inject)
+    # Trailing newline + ';' keep the page script that follows us intact.
+    return ("\n".join(parts) + "\n;\n").encode("ascii")
 
 
 def parse_macho_info(data):
@@ -413,7 +452,7 @@ def build_stub(kind, stub_va, addrs, orig_ins, enable_printf_logs):
     return asm_lines(lines)
 
 
-def patch_binary(data, enable_printf_logs=False):
+def patch_binary(data, enable_printf_logs=False, js=None):
     info = parse_macho_info(data)
     start, end = info["header_end"], info["text_off"]
     if start >= end:
@@ -425,7 +464,8 @@ def patch_binary(data, enable_printf_logs=False):
         data[off:off + len(blob)] = blob
         return off
 
-    js = load_payload()
+    if js is None:
+        js = load_payload()
     # Embed runtime strings and payload in __TEXT header padding.
     offs = {
         "yttv": put(YTTV_NEEDLE + b"\0"),
@@ -523,26 +563,136 @@ def patch_binary(data, enable_printf_logs=False):
     return out
 
 
-def patch_ipa(in_path, out_path, enable_printf_logs=False):
-    # Replace only app binary inside IPA; preserve all other entries.
+def find_app_dir(names):
+    # Top-level app bundle inside the IPA, e.g. "Payload/YouTubeUnstable.app/".
+    for n in names:
+        m = re.match(r"^(Payload/[^/]+\.app/)Info\.plist$", n)
+        if m:
+            return m.group(1)
+    raise ValueError("Payload/*.app/Info.plist not found in IPA")
+
+
+def rebrand_plist(raw, display_name, extra=None):
+    # Change only the user-visible name. CFBundleIdentifier is left as-is
+    # (Sideloadly / AltStore rewrite it when re-signing anyway).
+    fmt = plistlib.FMT_BINARY if raw.startswith(b"bplist") else plistlib.FMT_XML
+    info = plistlib.loads(raw)
+    old = info.get("CFBundleDisplayName") or info.get("CFBundleName")
+    info["CFBundleDisplayName"] = display_name
+    if extra:
+        info.update(extra)
+    return plistlib.dumps(info, fmt=fmt), old, info
+
+
+def _assetutil_names(car_path):
+    # Rendition names in a compiled Assets.car (macOS only).
+    res = subprocess.run(["xcrun", "assetutil", "--info", str(car_path)], check=True, capture_output=True, text=True)
+    names = set()
+    for entry in json.loads(res.stdout):
+        name = entry.get("Name") if isinstance(entry, dict) else None
+        if name:
+            names.add(name)
+    return names
+
+
+def compile_tvos_icons(xcassets, original_car, min_os, force=False):
+    """Compile platforms/tvos/Assets.xcassets with actool (Xcode, macOS only).
+
+    Returns (assets_car_bytes, partial_info_plist_dict). UNTESTED: no decrypted
+    IPA or Mac was available when this was written. Asset catalogs cannot be
+    merged, so the new Assets.car replaces the original one; we refuse unless
+    every rendition name in the original car also exists in ours (or force).
+    """
+    if sys.platform != "darwin" or not shutil.which("xcrun"):
+        raise RuntimeError("--tvos-icons needs macOS with Xcode (xcrun actool / assetutil)")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "out"
+        out.mkdir()
+        partial = Path(tmpdir) / "partial.plist"
+        cmd = [
+            "xcrun", "actool", str(xcassets),
+            "--compile", str(out),
+            "--platform", "appletvos",
+            "--target-device", "tv",
+            "--minimum-deployment-target", min_os,
+            "--app-icon", "App Icon & Top Shelf Image",
+            "--output-partial-info-plist", str(partial),
+            "--output-format", "human-readable-text",
+            "--errors", "--warnings",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0 or not (out / "Assets.car").exists():
+            raise RuntimeError("actool failed:\n" + res.stdout + res.stderr)
+        new_car = out / "Assets.car"
+        if original_car is not None:
+            orig_path = Path(tmpdir) / "orig.car"
+            orig_path.write_bytes(original_car)
+            missing = sorted(_assetutil_names(orig_path) - _assetutil_names(new_car))
+            if missing and not force:
+                raise RuntimeError(
+                    "original Assets.car contains renditions the new icon catalog lacks; replacing it could break "
+                    "the app: " + ", ".join(missing[:30]) + ("..." if len(missing) > 30 else "")
+                    + "\nRe-run with --force-icons to replace anyway, or extract those assets into "
+                    "platforms/tvos/Assets.xcassets first."
+                )
+            if missing:
+                print("WARNING: dropping renditions from original Assets.car:", ", ".join(missing))
+        return new_car.read_bytes(), plistlib.loads(partial.read_bytes()) if partial.exists() else {}
+
+
+def patch_ipa(in_path, out_path, enable_printf_logs=False, display_name=APP_DISPLAY_NAME,
+              embed_ytplus=True, ytplus_url=None, tvos_icons=None, force_icons=False):
+    # Replace the app binary (and, for YouTube +, Info.plist and optionally
+    # Assets.car) inside the IPA; preserve all other entries.
     with zipfile.ZipFile(in_path, "r") as zin:
         infos = zin.infolist()
+        names = [i.filename for i in infos]
         bin_info = next((i for i in infos if i.filename.endswith("/YouTubeUnstable")), None)
         if not bin_info:
             raise ValueError("YouTubeUnstable binary not found in IPA")
+        app_dir = find_app_dir(names)
 
-        binary = bytearray(zin.read(bin_info.filename))
-        meta = patch_binary(binary, enable_printf_logs=enable_printf_logs)
+        original = zin.read(bin_info.filename)
+        binary = bytearray(original)
+        try:
+            meta = patch_binary(binary, enable_printf_logs=enable_printf_logs,
+                                js=load_payload(embed_ytplus=embed_ytplus, ytplus_url=ytplus_url))
+        except ValueError as e:
+            if not embed_ytplus or "out of space" not in str(e):
+                raise
+            print("NOTE: not enough __TEXT padding to embed youtube-plus.js; it will be loaded from",
+                  ytplus_url or DEFAULT_YTPLUS_URL)
+            binary = bytearray(original)
+            meta = patch_binary(binary, enable_printf_logs=enable_printf_logs,
+                                js=load_payload(embed_ytplus=False, ytplus_url=ytplus_url))
+
+        replaced = {bin_info.filename: bytes(binary)}
+
+        plist_name = app_dir + "Info.plist"
+        extra = None
+        if tvos_icons:
+            car_name = app_dir + "Assets.car"
+            orig_car = zin.read(car_name) if car_name in names else None
+            min_os = plistlib.loads(zin.read(plist_name)).get("MinimumOSVersion", "15.0")
+            car, extra = compile_tvos_icons(Path(tvos_icons), orig_car, min_os, force=force_icons)
+            replaced[car_name] = car
+            print("Icons: replaced", car_name, "and merged", ", ".join(sorted(extra)) or "no plist keys")
+        if display_name:
+            new_plist, old_name, _ = rebrand_plist(zin.read(plist_name), display_name, extra)
+            replaced[plist_name] = new_plist
+            print(f"Display name: {old_name!r} -> {display_name!r}")
 
         with zipfile.ZipFile(out_path, "w") as zout:
             for info in infos:
-                payload = binary if info.filename == bin_info.filename else zin.read(info.filename)
-                zout.writestr(info, payload)
+                payload = replaced.get(info.filename)
+                zout.writestr(info, payload if payload is not None else zin.read(info.filename))
+            if tvos_icons and (app_dir + "Assets.car") not in names:
+                zout.writestr(app_dir + "Assets.car", replaced[app_dir + "Assets.car"])
     return meta
 
 
 def main():
-    ap = argparse.ArgumentParser(description="MuTube patcher (YouTube 4.54.01)")
+    ap = argparse.ArgumentParser(description="YouTube + patcher (formerly MuTube; tvOS YouTube 4.54.01)")
     ap.add_argument("--in", dest="inp", required=True, help="input IPA path")
     ap.add_argument("--out", dest="outp", required=True, help="output IPA path")
     ap.add_argument(
@@ -550,9 +700,28 @@ def main():
         action="store_true",
         help="enable MUTUBE_* printf logs in hook stubs (disabled by default)",
     )
+    ap.add_argument("--display-name", default=APP_DISPLAY_NAME,
+                    help=f"CFBundleDisplayName to set (default {APP_DISPLAY_NAME!r}; '' keeps the original)")
+    ap.add_argument("--no-embed-youtube-plus", action="store_true",
+                    help="do not embed youtube-plus.js; inject.js loads it from --youtube-plus-url instead")
+    ap.add_argument("--youtube-plus-url", default=None,
+                    help=f"URL inject.js loads youtube-plus.js from when not embedded (default {DEFAULT_YTPLUS_URL})")
+    ap.add_argument("--tvos-icons", default=None, metavar="XCASSETS",
+                    help="compile this asset catalog (e.g. platforms/tvos/Assets.xcassets) with actool and "
+                         "replace the app's Assets.car (macOS + Xcode only, experimental)")
+    ap.add_argument("--force-icons", action="store_true",
+                    help="replace Assets.car even if it holds renditions the icon catalog lacks")
     args = ap.parse_args()
 
-    meta = patch_ipa(args.inp, args.outp, enable_printf_logs=args.enable_printf_logs)
+    meta = patch_ipa(
+        args.inp, args.outp,
+        enable_printf_logs=args.enable_printf_logs,
+        display_name=args.display_name,
+        embed_ytplus=not args.no_embed_youtube_plus,
+        ytplus_url=args.youtube_plus_url,
+        tvos_icons=args.tvos_icons,
+        force_icons=args.force_icons,
+    )
     print("Patched IPA written to:", args.outp)
     for entry in meta:
         print("Patch:", entry["name"])

@@ -1,0 +1,636 @@
+/*
+ * YouTube + : always offer "Not interested" and "Don't recommend channel" in the
+ * long-press (hold Select / OK) menu of every video tile on the YouTube TV
+ * (leanback, youtube.com/tv) Home screen.
+ *
+ * Runs on Cobalt (Apple TV via the patched IPA), Tizen, webOS and desktop
+ * browsers on youtube.com/tv. Written in ES5 (no arrow functions, let/const,
+ * optional chaining or template strings) so old Tizen / webOS engines parse it,
+ * and pure ASCII so patcher.py can embed it in the tvOS binary.
+ *
+ * HOW IT WORKS
+ *   1. Wraps JSON.parse (the TV client parses every InnerTube response with it,
+ *      the same hook TizenTube's adblock.js uses) and walks browse/continuation
+ *      responses for video tiles (tileRenderer / lockupViewModel).
+ *   2. For each tile it finds the long-press menu
+ *      (onLongPressCommand.showMenuCommand.menu.menuRenderer.items) and appends
+ *      two menuServiceItemRenderer entries after the existing ones. Existing
+ *      items (Play, Save to Watch Later, Save to playlist, Add to queue, Go to
+ *      channel, ...) are left untouched.
+ *   3. Each new entry carries what is needed to send real feedback:
+ *        a) a legacy feedbackToken, if the response still had one, or
+ *        b) the "PAcontext_menu" engagement-panel reference (panelId + params).
+ *           On click we POST /youtubei/v1/get_panel, take the feedback tokens
+ *           out of the panel and POST /youtubei/v1/feedback, exactly like
+ *           TizenTube #676 / SmartTube do.
+ *        c) if neither exists for a tile, the entry still appears, and the
+ *           action falls back to a LOCAL filter (video id / channel id kept in
+ *           localStorage and removed from later responses). YouTube is not told
+ *           in that case; there is no way to mint a feedback token client-side.
+ *   4. Clicks are routed through the client's resolveCommand (wrapped here),
+ *      a toast confirms the action.
+ *
+ * VERIFIED vs ASSUMED (nothing here has been run on a TV by the author)
+ *   Verified from TizenTube source (reisxd/TizenTube 1.15.2, mods/features/
+ *   adblock.js, resolveCommand.js, utils/innerTubeCalls.js, ui/ytUI.js):
+ *     - the JSON.parse hook point and the window._yttv[*].JSON.parse copies;
+ *     - the menu shapes above and the TOAST popup command shape;
+ *     - Brandon's Apple TV long-press menu (Play / Save to Watch Later / Save to
+ *       playlist / Add to queue / Go to channel) is TizenTube's synthesized
+ *       menu, so items shaped like TizenTube's "Add to queue"
+ *       (menuServiceItemRenderer + serviceEndpoint.playlistEditEndpoint) render
+ *       and are clickable on that client.
+ *   Taken from TizenTube PR #676 / #720 write-ups (not re-verified here):
+ *     - feedback tokens moved to the get_panel engagement panel;
+ *     - panel listItems order: [0] Not interested, [1] Don't recommend channel;
+ *     - menu items whose serviceEndpoint has only a top-level customAction do
+ *       not render on Cobalt (why TizenTube 1.15.2's own restored items can
+ *       be invisible);
+ *     - many Home tiles carry no panel reference at all.
+ *   Assumed:
+ *     - clicking an item whose serviceEndpoint is
+ *       {playlistEditEndpoint:{ytPlusAction:{...}}} reaches
+ *       window._yttv[*].instance.resolveCommand, where we intercept it before
+ *       the native playlist-edit handler;
+ *     - mappings.get('KabukiInnerTubeClient').fetch() keeps working for
+ *       get_panel / feedback on the tvOS 4.54.01 build (TizenTube relies on
+ *       the same call there for "Go to channel").
+ *
+ * DEBUG
+ *   localStorage.setItem('ytplus.debug', '1')  (or window.YTPLUS_CONFIG =
+ *   {debug: true} before this script runs) logs every patched tile and every
+ *   feedback request with the prefix [YouTube+]. window.YouTubePlus exposes
+ *   helpers (stats, clearHidden, process) for the console / remote inspector.
+ */
+(function () {
+  'use strict';
+
+  var W = typeof window !== 'undefined' ? window : this;
+  if (W.__ytPlusLoaded) return;
+  W.__ytPlusLoaded = true;
+
+  var VERSION = '1.0.0';
+  var ACTION_NOT_INTERESTED = 'YTPLUS_NOT_INTERESTED';
+  var ACTION_DONT_RECOMMEND = 'YTPLUS_DONT_RECOMMEND_CHANNEL';
+  var MAX_LOCAL = 1000;
+
+  // ---------------------------------------------------------------- config
+  var CFG = {
+    debug: false,
+    // 'all' = every tile list YouTube TV sends (Home, Subscriptions, topic
+    // tabs, search, watch-next). 'home' = only while the Home screen is shown.
+    scope: 'all',
+    // When a tile has no feedback token / panel, hide it locally instead.
+    localFallback: true,
+    // If a tile has no long-press menu at all (TizenTube not loaded), build
+    // one: Play, Save to Watch Later, Save to playlist + our two items.
+    buildMenuIfMissing: true,
+    toasts: true,
+    labels: {
+      notInterested: 'Not interested',
+      dontRecommend: "Don't recommend channel",
+      toastTitle: 'YouTube +',
+      toastNotInterested: "Got it. You'll see fewer videos like this.",
+      toastDontRecommend: "Got it. We won't recommend this channel.",
+      toastLocalVideo: 'Hidden on this device (YouTube gave no feedback token).',
+      toastLocalChannel: 'Channel hidden on this device (YouTube gave no feedback token).',
+      toastError: 'Could not send feedback. Hidden on this device instead.'
+    }
+  };
+
+  function lsGet(key) {
+    try { return W.localStorage ? W.localStorage.getItem('ytplus.' + key) : null; } catch (e) { return null; }
+  }
+  function lsSet(key, value) {
+    try { if (W.localStorage) W.localStorage.setItem('ytplus.' + key, value); } catch (e) { /* ignore */ }
+  }
+
+  (function applyOverrides() {
+    var o = W.YTPLUS_CONFIG, k, l;
+    if (o && typeof o === 'object') {
+      for (k in o) {
+        if (!o.hasOwnProperty(k)) continue;
+        if (k === 'labels' && o.labels) {
+          for (l in o.labels) if (o.labels.hasOwnProperty(l)) CFG.labels[l] = o.labels[l];
+        } else {
+          CFG[k] = o[k];
+        }
+      }
+    }
+    if (lsGet('debug') === '1') CFG.debug = true;
+    if (lsGet('scope')) CFG.scope = lsGet('scope');
+  })();
+
+  function log() {
+    if (!CFG.debug || !W.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[YouTube+]');
+    try { W.console.log.apply(W.console, args); } catch (e) { /* ignore */ }
+  }
+  function warn() {
+    if (!W.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[YouTube+]');
+    try { (W.console.warn || W.console.log).apply(W.console, args); } catch (e) { /* ignore */ }
+  }
+
+  var stats = { responses: 0, tiles: 0, itemsAdded: 0, withPanel: 0, withToken: 0, noToken: 0, filtered: 0, clicks: 0 };
+
+  // ---------------------------------------------------------------- helpers
+  function isObj(v) { return v !== null && typeof v === 'object'; }
+  function isArr(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
+  function get(obj, path) {
+    var parts = path.split('.'), cur = obj, i;
+    for (i = 0; i < parts.length; i++) {
+      if (!isObj(cur)) return undefined;
+      cur = cur[parts[i]];
+    }
+    return cur;
+  }
+  function indexOf(arr, v) {
+    for (var i = 0; i < arr.length; i++) if (arr[i] === v) return i;
+    return -1;
+  }
+  function textOf(t) {
+    if (!t) return '';
+    if (typeof t === 'string') return t;
+    if (t.simpleText) return String(t.simpleText);
+    if (t.content) return String(t.content);
+    if (isArr(t.runs)) {
+      var s = '', i;
+      for (i = 0; i < t.runs.length; i++) s += (t.runs[i] && t.runs[i].text) || '';
+      return s;
+    }
+    return '';
+  }
+
+  function loadList(key) {
+    var raw = lsGet(key);
+    if (!raw) return [];
+    try { var v = JSON.__ytPlusOrigParse ? JSON.__ytPlusOrigParse(raw) : JSON.parse(raw); return isArr(v) ? v : []; } catch (e) { return []; }
+  }
+  function addToList(key, value) {
+    if (!value) return;
+    var list = loadList(key);
+    if (indexOf(list, value) !== -1) return;
+    list.push(value);
+    if (list.length > MAX_LOCAL) list = list.slice(list.length - MAX_LOCAL);
+    lsSet(key, JSON.stringify(list));
+  }
+
+  // ---------------------------------------------------------------- tiles
+  function isVideoTile(item) {
+    if (!isObj(item)) return false;
+    var tr = item.tileRenderer;
+    if (tr) {
+      if (tr.style !== 'TILE_STYLE_YTLR_DEFAULT' && tr.contentType !== 'TILE_CONTENT_TYPE_VIDEO') return false;
+      return !!(tr.contentId || get(tr, 'onSelectCommand.watchEndpoint.videoId'));
+    }
+    var lv = item.lockupViewModel;
+    if (lv) return lv.contentType === 'LOCKUP_CONTENT_TYPE_VIDEO' && !!lv.contentId;
+    return false;
+  }
+
+  function getVideoId(item) {
+    if (item.tileRenderer) return item.tileRenderer.contentId || get(item.tileRenderer, 'onSelectCommand.watchEndpoint.videoId') || null;
+    if (item.lockupViewModel) return item.lockupViewModel.contentId || null;
+    return null;
+  }
+
+  function getWatchEndpoint(item) {
+    if (item.tileRenderer) return get(item.tileRenderer, 'onSelectCommand.watchEndpoint');
+    return get(item.lockupViewModel, 'rendererContext.commandContext.onTap.innertubeCommand.watchEndpoint');
+  }
+
+  function findChannelId(obj, depth) {
+    if (!isObj(obj) || depth > 14) return null;
+    var id = get(obj, 'browseEndpoint.browseId');
+    if (typeof id === 'string' && id.indexOf('UC') === 0) return id;
+    for (var k in obj) {
+      if (!obj.hasOwnProperty(k) || k === 'customAction' || k === 'ytPlusAction') continue;
+      var r = findChannelId(obj[k], depth + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  // First metadata line of a TV video tile is the channel name (as in TizenTube).
+  function getChannel(item) {
+    var node = item.tileRenderer
+      ? get(item.tileRenderer, 'metadata.tileMetadataRenderer.lines.0.lineRenderer.items.0.lineItemRenderer.text')
+      : get(item.lockupViewModel, 'metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows.0.metadataParts.0.text');
+    var name = textOf(node).replace(/^\s+|\s+$/g, '');
+    var id = findChannelId(node, 0) || findChannelId(item, 0);
+    if (!name && !id) return null;
+    return { id: id || null, name: name || null };
+  }
+
+  function getTitle(item) {
+    if (item.tileRenderer) return textOf(get(item.tileRenderer, 'metadata.tileMetadataRenderer.title'));
+    return textOf(get(item.lockupViewModel, 'metadata.lockupMetadataViewModel.title'));
+  }
+
+  // Returns the object that holds the long-press command, or null.
+  function getLongPress(item) {
+    if (item.tileRenderer) return item.tileRenderer.onLongPressCommand || null;
+    var lp = get(item.lockupViewModel, 'rendererContext.commandContext.onLongPress');
+    if (!lp) return null;
+    return lp.innertubeCommand || lp;
+  }
+  function setLongPress(item, cmd) {
+    if (item.tileRenderer) { item.tileRenderer.onLongPressCommand = cmd; return; }
+    var lv = item.lockupViewModel;
+    if (!lv.rendererContext) lv.rendererContext = {};
+    if (!lv.rendererContext.commandContext) lv.rendererContext.commandContext = {};
+    lv.rendererContext.commandContext.onLongPress = { innertubeCommand: cmd };
+  }
+  function getMenuItems(item) {
+    var lp = getLongPress(item);
+    var items = get(lp, 'showMenuCommand.menu.menuRenderer.items');
+    return isArr(items) ? items : null;
+  }
+
+  // Search a tile (including TizenTube's copies of the original tile stored in
+  // "Add to queue" / "Go to channel" parameters, and TizenTube 1.15.2's own
+  // restored items) for the context-menu engagement panel reference.
+  function findPanel(obj, depth) {
+    if (!isObj(obj) || depth > 16) return null;
+    var ep = obj.showEngagementPanelEndpoint;
+    if (isObj(ep) && get(ep, 'identifier.tag') && get(ep, 'globalConfiguration.params')) {
+      var tag = String(ep.identifier.tag);
+      if (/context_menu/i.test(tag)) return { panelId: tag, params: ep.globalConfiguration.params };
+    }
+    if (typeof obj.panelId === 'string' && typeof obj.params === 'string' && /context_menu/i.test(obj.panelId)) {
+      return { panelId: obj.panelId, params: obj.params };
+    }
+    for (var k in obj) {
+      if (!obj.hasOwnProperty(k) || k === 'ytPlusAction') continue;
+      var r = findPanel(obj[k], depth + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  function findFeedbackToken(obj, depth) {
+    if (!isObj(obj) || (depth || 0) > 16) return null;
+    if (typeof obj.feedbackToken === 'string' && obj.feedbackToken) return obj.feedbackToken;
+    for (var k in obj) {
+      if (!obj.hasOwnProperty(k) || k === 'customAction' || k === 'ytPlusAction') continue;
+      var r = findFeedbackToken(obj[k], (depth || 0) + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  function menuItemEndpoint(mi) {
+    if (!isObj(mi)) return null;
+    if (mi.menuServiceItemRenderer) return mi.menuServiceItemRenderer.serviceEndpoint || null;
+    if (mi.menuNavigationItemRenderer) return mi.menuNavigationItemRenderer.navigationEndpoint || null;
+    return null;
+  }
+  function menuItemText(mi) {
+    var r = mi && (mi.menuServiceItemRenderer || mi.menuNavigationItemRenderer);
+    return r ? textOf(r.text) : '';
+  }
+  function customActionOf(ep) {
+    if (!isObj(ep)) return null;
+    var ca = ep.customAction || get(ep, 'playlistEditEndpoint.customAction');
+    return isObj(ca) ? ca : null;
+  }
+
+  function menuItem(label, action, params) {
+    return {
+      menuServiceItemRenderer: {
+        text: { runs: [{ text: label }] },
+        serviceEndpoint: {
+          clickTrackingParams: null,
+          // playlistEditEndpoint is the wrapper TizenTube's visible items use
+          // ("Add to queue"). ytPlusAction is our private key: TizenTube's
+          // resolveCommand ignores it, ours intercepts it.
+          playlistEditEndpoint: { ytPlusAction: { action: action, parameters: params } }
+        },
+        trackingParams: null
+      }
+    };
+  }
+
+  function buildMenu(item) {
+    // Mirrors TizenTube's longPressData() core items (ui/ytUI.js).
+    var vid = getVideoId(item);
+    var we = getWatchEndpoint(item) || { videoId: vid };
+    var items = [
+      { menuNavigationItemRenderer: { text: { runs: [{ text: 'Play' }] }, navigationEndpoint: { clickTrackingParams: null, watchEndpoint: we }, trackingParams: null } },
+      { menuServiceItemRenderer: { text: { runs: [{ text: 'Save to Watch Later' }] }, serviceEndpoint: {
+        clickTrackingParams: null,
+        commandMetadata: { webCommandMetadata: { sendPost: true, apiUrl: '/youtubei/v1/browse/edit_playlist' } },
+        playlistEditEndpoint: { playlistId: 'WL', actions: [{ addedVideoId: vid, action: 'ACTION_ADD_VIDEO' }] }
+      }, trackingParams: null } },
+      { menuNavigationItemRenderer: { text: { runs: [{ text: 'Save to playlist' }] }, navigationEndpoint: { clickTrackingParams: null, addToPlaylistEndpoint: { videoId: vid } }, trackingParams: null } }
+    ];
+    var thumbs = item.tileRenderer
+      ? get(item.tileRenderer, 'header.tileHeaderRenderer.thumbnail.thumbnails')
+      : get(item.lockupViewModel, 'contentImage.thumbnailViewModel.image.sources');
+    return {
+      clickTrackingParams: null,
+      showMenuCommand: {
+        contentId: vid,
+        thumbnail: { thumbnails: thumbs || [] },
+        title: { simpleText: getTitle(item) },
+        subtitle: { simpleText: (getChannel(item) || {}).name || '' },
+        menu: { menuRenderer: { items: items, trackingParams: null } }
+      }
+    };
+  }
+
+  function patchTile(item) {
+    stats.tiles++;
+    var menu = getMenuItems(item);
+    var panel = findPanel(item, 0);
+    if (!menu) {
+      if (!CFG.buildMenuIfMissing) return;
+      setLongPress(item, buildMenu(item));
+      menu = getMenuItems(item);
+      if (!menu) return;
+    }
+
+    var i, ep, ca, nativeTokens = [], haveNI = false, haveDRC = false;
+    for (i = menu.length - 1; i >= 0; i--) {
+      ep = menuItemEndpoint(menu[i]);
+      if (!ep) continue;
+      if (ep.playlistEditEndpoint && ep.playlistEditEndpoint.ytPlusAction) return; // already patched
+      ca = customActionOf(ep);
+      if (ca && (ca.action === 'NOT_INTERESTED' || ca.action === 'DONT_RECOMMEND_CHANNEL')) {
+        if (ep.playlistEditEndpoint && ep.playlistEditEndpoint.customAction) {
+          // Newer TizenTube (PR #720 shape) already renders working items.
+          if (ca.action === 'NOT_INTERESTED') haveNI = true; else haveDRC = true;
+          continue;
+        }
+        // TizenTube 1.15.2 shape (top-level customAction): reported not to
+        // render on Cobalt. Harvest its panel reference, replace it with ours.
+        if (!panel) panel = findPanel(ca.parameters, 0);
+        menu.splice(i, 1);
+        continue;
+      }
+      var tok = findFeedbackToken(ep, 0);
+      if (tok) {
+        stats.withToken++;
+        nativeTokens.unshift({ token: tok, text: menuItemText(menu[i]) });
+      }
+    }
+    // Legacy responses still carry native feedback items; keep them.
+    for (i = 0; i < nativeTokens.length; i++) {
+      var t = nativeTokens[i].text.toLowerCase();
+      if (t === CFG.labels.notInterested.toLowerCase()) haveNI = true;
+      else if (t === CFG.labels.dontRecommend.toLowerCase()) haveDRC = true;
+    }
+    if (nativeTokens.length >= 2) { haveNI = true; haveDRC = true; }
+
+    var params = {
+      videoId: getVideoId(item),
+      channel: getChannel(item),
+      panel: panel,
+      title: getTitle(item)
+    };
+    if (panel) stats.withPanel++; else stats.noToken++;
+    if (!haveNI) { menu.push(menuItem(CFG.labels.notInterested, ACTION_NOT_INTERESTED, params)); stats.itemsAdded++; }
+    if (!haveDRC) { menu.push(menuItem(CFG.labels.dontRecommend, ACTION_DONT_RECOMMEND, params)); stats.itemsAdded++; }
+    log('tile', params.videoId, panel ? 'panel' : 'NO panel/token (local fallback)', params.channel);
+  }
+
+  // ---------------------------------------------------------------- local filter
+  var EXEMPT_PAGES = /FElibrary|FEhistory|FEplaylist|\/playlist|[?&]list=/i;
+  function makeFilter() {
+    if (!CFG.localFallback) return null;
+    var hidden = loadList('hiddenVideos'), chans = loadList('hiddenChannels');
+    if (!hidden.length && !chans.length) return null;
+    if (EXEMPT_PAGES.test((W.location && W.location.hash) || '')) return null;
+    return function (item) {
+      if (!isVideoTile(item)) return false;
+      if (indexOf(hidden, getVideoId(item)) !== -1) return true;
+      if (!chans.length) return false;
+      var c = getChannel(item);
+      if (!c) return false;
+      if (c.id && indexOf(chans, 'id:' + c.id) !== -1) return true;
+      return !!(c.name && indexOf(chans, 'name:' + c.name.toLowerCase()) !== -1);
+    };
+  }
+
+  // ---------------------------------------------------------------- walk
+  var SKIP_KEYS = { customAction: 1, ytPlusAction: 1, parameters: 1, playerResponse: 1, streamingData: 1, frameworkUpdates: 1 };
+  function walk(node, depth, filter) {
+    if (depth > 64 || !isObj(node)) return;
+    var i;
+    if (isArr(node)) {
+      if (filter) {
+        for (i = node.length - 1; i >= 0; i--) {
+          if (filter(node[i])) { node.splice(i, 1); stats.filtered++; }
+        }
+      }
+      for (i = 0; i < node.length; i++) walk(node[i], depth + 1, filter);
+      return;
+    }
+    if (isVideoTile(node)) {
+      try { patchTile(node); } catch (e) { warn('patchTile failed', e); }
+      return;
+    }
+    for (var k in node) {
+      if (!node.hasOwnProperty(k) || SKIP_KEYS[k]) continue;
+      if (isObj(node[k])) walk(node[k], depth + 1, filter);
+    }
+  }
+
+  function onHome() {
+    var h = (W.location && W.location.hash) || '';
+    if (h === '' || h === '#' || h === '#/') return true;
+    return /FEwhat_to_watch|[?&]c=default\b/.test(h);
+  }
+
+  function processResponse(r) {
+    if (!isObj(r) || isArr(r)) return r;
+    if (!r.contents && !r.continuationContents && !r.onResponseReceivedActions && !r.onResponseReceivedCommands) return r;
+    if (CFG.scope === 'home' && !onHome()) return r;
+    stats.responses++;
+    try { walk(r, 0, makeFilter()); } catch (e) { warn('process failed', e); }
+    return r;
+  }
+
+  // ---------------------------------------------------------------- JSON.parse hook
+  // We want to run AFTER TizenTube (it rebuilds tile menus), so we always keep
+  // our wrapper outermost: if somebody wraps JSON.parse after us, we wrap again
+  // and the older wrapper turns into a pass-through.
+  var nativeParse = JSON.parse;
+  JSON.__ytPlusOrigParse = nativeParse;
+  var activeWrapper = null;
+
+  function makeWrapper(base) {
+    var wrapper = function () {
+      var r = base.apply(this, arguments);
+      if (wrapper !== activeWrapper) return r;
+      return processResponse(r);
+    };
+    wrapper.__ytPlus = true;
+    return wrapper;
+  }
+  function installParseHook() {
+    if (JSON.parse !== activeWrapper) {
+      activeWrapper = makeWrapper(JSON.parse);
+      JSON.parse = activeWrapper;
+      log('JSON.parse hook (re)installed');
+    }
+    if (W.JSON && W.JSON !== JSON && W.JSON.parse !== activeWrapper) W.JSON.parse = activeWrapper;
+    var y = W._yttv, k;
+    if (y) {
+      for (k in y) {
+        try {
+          if (y[k] && y[k].JSON && y[k].JSON.parse && y[k].JSON.parse !== activeWrapper) y[k].JSON.parse = activeWrapper;
+        } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- resolveCommand hook
+  function findCommandHost() {
+    var y = W._yttv, k;
+    if (!y) return null;
+    for (k in y) {
+      try {
+        if (y[k] && y[k].instance && typeof y[k].instance.resolveCommand === 'function') return y[k].instance;
+      } catch (e) { /* ignore */ }
+    }
+    return null;
+  }
+  function resolveCommand(cmd) {
+    var host = findCommandHost();
+    if (!host) { warn('resolveCommand host not found'); return false; }
+    return host.resolveCommand(cmd);
+  }
+  function installCommandHook() {
+    var host = findCommandHost();
+    if (!host || host.__ytPlusPatched) return;
+    var orig = host.resolveCommand;
+    host.resolveCommand = function (cmd) {
+      var a = cmd && cmd.playlistEditEndpoint && cmd.playlistEditEndpoint.ytPlusAction;
+      if (a) {
+        try { handleAction(a.action, a.parameters || {}); } catch (e) { warn('action failed', e); }
+        return true;
+      }
+      return orig.apply(this, arguments);
+    };
+    host.__ytPlusPatched = true;
+    log('resolveCommand hook installed');
+  }
+
+  // ---------------------------------------------------------------- InnerTube
+  function innertube(path, payload, cb) {
+    var y = W._yttv, k, mappings = null, client = null, done = false;
+    if (y) for (k in y) { try { if (y[k] && y[k].mappings) { mappings = y[k].mappings; break; } } catch (e) { /* ignore */ } }
+    try { client = mappings && mappings.get('KabukiInnerTubeClient'); } catch (e) { client = null; }
+    if (!client || !client.fetch) { cb(new Error('KabukiInnerTubeClient not found')); return; }
+    var timer = setTimeout(function () { if (!done) { done = true; cb(new Error('timeout ' + path)); } }, 15000);
+    log('POST', path, payload);
+    try {
+      client.fetch({ path: path, payload: payload }).subscribe(function (res) {
+        if (done) return; done = true; clearTimeout(timer); log('reply', path, res); cb(null, res);
+      }, function (err) {
+        if (done) return; done = true; clearTimeout(timer); cb(err || new Error('fetch error'));
+      });
+    } catch (e) { if (!done) { done = true; clearTimeout(timer); cb(e); } }
+  }
+
+  // index 0 = Not interested, 1 = Don't recommend channel (order per
+  // TizenTube #676 / SmartTube fixtures). If English labels are present we
+  // prefer matching by text.
+  function panelTokens(panel, cb) {
+    innertube('/youtubei/v1/get_panel', { panelId: panel.panelId, params: panel.params }, function (err, res) {
+      if (err) { cb(err); return; }
+      var list = get(res, 'content.engagementPanelSectionListRenderer.content.listViewModel.listItems');
+      if (!isArr(list)) { cb(new Error('panel has no listItems')); return; }
+      var out = [], byText = {}, i, tok, txt;
+      for (i = 0; i < list.length; i++) {
+        tok = findFeedbackToken(list[i] && list[i].listItemViewModel, 0);
+        if (!tok) continue;
+        out.push(tok);
+        txt = textOf(get(list[i], 'listItemViewModel.title')).toLowerCase();
+        if (txt.indexOf('not interested') !== -1) byText.ni = tok;
+        if (txt.indexOf('recommend') !== -1) byText.drc = tok;
+      }
+      cb(null, { ni: byText.ni || out[0] || null, drc: byText.drc || out[1] || null });
+    });
+  }
+
+  function sendFeedback(token, cb) {
+    innertube('/youtubei/v1/feedback', { feedbackTokens: [token] }, cb);
+  }
+
+  // ---------------------------------------------------------------- actions
+  function toast(subtitle) {
+    if (!CFG.toasts) return;
+    try {
+      resolveCommand({ openPopupAction: { popupType: 'TOAST', popup: { overlayToastRenderer: {
+        title: { simpleText: CFG.labels.toastTitle }, subtitle: { simpleText: subtitle } } } } });
+    } catch (e) { log('toast failed', e); }
+  }
+
+  function localFallback(isChannel, p, msg) {
+    if (!CFG.localFallback) { toast(CFG.labels.toastError); return; }
+    if (isChannel && p.channel) {
+      addToList('hiddenChannels', p.channel.id ? 'id:' + p.channel.id : 'name:' + String(p.channel.name).toLowerCase());
+    } else {
+      addToList('hiddenVideos', p.videoId);
+    }
+    toast(msg);
+  }
+
+  function handleAction(action, p) {
+    stats.clicks++;
+    var isChannel = action === ACTION_DONT_RECOMMEND;
+    if (action !== ACTION_NOT_INTERESTED && !isChannel) return;
+    log('click', action, p);
+    // "Not interested" removes the tile on YouTube's other clients; mimic that
+    // locally so it is gone after the next refresh either way.
+    if (!isChannel) addToList('hiddenVideos', p.videoId);
+
+    if (!p.panel) {
+      localFallback(isChannel, p, isChannel ? CFG.labels.toastLocalChannel : CFG.labels.toastLocalVideo);
+      return;
+    }
+    panelTokens(p.panel, function (err, toks) {
+      var tok = toks && (isChannel ? toks.drc : toks.ni);
+      if (err || !tok) {
+        warn('no feedback token from panel', err);
+        localFallback(isChannel, p, CFG.labels.toastError);
+        return;
+      }
+      sendFeedback(tok, function (err2) {
+        if (err2) { warn('feedback failed', err2); localFallback(isChannel, p, CFG.labels.toastError); return; }
+        toast(isChannel ? CFG.labels.toastDontRecommend : CFG.labels.toastNotInterested);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------- boot
+  installParseHook();
+  var ticks = 0;
+  var timer = setInterval(function () {
+    ticks++;
+    installParseHook();
+    installCommandHook();
+    // Keep checking quickly during startup (TizenTube loads async), then slowly.
+    if (ticks === 240) {
+      clearInterval(timer);
+      setInterval(function () { installParseHook(); installCommandHook(); }, 5000);
+    }
+  }, 250);
+
+  W.YouTubePlus = {
+    version: VERSION,
+    config: CFG,
+    stats: function () { return stats; },
+    process: processResponse,
+    handleAction: handleAction,
+    rehook: function () { installParseHook(); installCommandHook(); },
+    clearHidden: function () { lsSet('hiddenVideos', '[]'); lsSet('hiddenChannels', '[]'); },
+    setDebug: function (on) { CFG.debug = !!on; lsSet('debug', on ? '1' : '0'); }
+  };
+  log('loaded v' + VERSION);
+})();

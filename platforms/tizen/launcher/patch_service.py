@@ -41,7 +41,9 @@ def once(old, new):
 
 
 # 5. Diagnostics bootstrap, before the webpack bootstrap.
-BOOT = (r"""/* YouTube + diagnostics (patch_service.py) */
+BOOT = (r"""/* YouTube + diagnostics (patch_service.py). Wrapped in a function: Tizen 9/10 run
+   services in an embedded Node 20 that does not start files with top-level declarations. */
+(function () {
 var __ytpLogBuf = [];
 function __ytpLog(m) {
   try {
@@ -63,6 +65,7 @@ try {
   __ytpDiag.listen(8102, '0.0.0.0', function () { __ytpLog('diag listening on 8102'); });
 } catch (e) {}
 __ytpLog('=== service start [""" + "{label}" + r"""] node ' + process.version + ' pid ' + process.pid + ' dir ' + __dirname);
+})();
 """).replace("{label}", label)
 if js.startswith("/* YouTube + diagnostics"):
     sys.exit("patch_service: already patched")

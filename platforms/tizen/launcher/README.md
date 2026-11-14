@@ -36,13 +36,37 @@ Open **YouTube +** (not "YouTube + Player") after a restart. Icons: `platforms/t
 (play button centred). The user script is still TizenTube's from jsDelivr, as in the stock build.
 GPL-3.0 (TizenTube by Reis Can).
 
-**Certificate level.** On the Tizen 10 Frame (QN65LS03HEDXZA, 2026) no web service runs when
-the package is signed with a *Public* distributor certificate: `launchAppControl` reports
-success but the service process exits at once (even a 10-line test service never ran). On the
-Tizen 6 Frame (QN43LS03AAFXZA) Public works. TizenTube's guide also requires Partner signing for
-the Cobalt build. Sign the launcher (and the player) with a **Partner** distributor certificate
-that lists the TV's DUID for Tizen 7+ TVs.
+**Tizen 9/10 (2025+ TVs).** Two things differ there (found on the 2026 Living Room Frame,
+QN65LS03HEDXZA, Tizen 10, embedded Node 20):
+- A web service only starts through `wrt:service`: the launcher loads
+  `import { Service } from 'wrt:service'` in a module script and calls
+  `new Service(id).start()` (as Apps2Samsung TV-Store 0.3.9 does). `launchAppControl` reports
+  success but the service never runs. Older TVs keep using `launchAppControl`.
+- The service file must not declare anything at the top level; the diagnostics bootstrap is
+  wrapped in a function (the ncc bundle already is).
+- Cobalt may not reach `127.0.0.2` there, so build with `--proxy-host <TV IP>` (the proxy
+  listens on 0.0.0.0) and give the TV a DHCP reservation.
+- Signed with the `YTPlus-Partner` profile (our author key + the Apps2Samsung Partner distributor
+  certificate). Whether Public would also do now that the service starts properly is untested.
 
 **Diagnostics.** The launcher's service serves its start-up log at `http://<tv>:8102/` (start-up
 steps, cobalt setup, proxy listen, CONNECT host names, uncaught errors). Setting `REPORT_URL` in
 `launcher/index.html` to a LAN listener makes the launcher page POST its own diagnostics.
+
+## Installing from the Mac mini (no Apps2Samsung)
+
+`tizen-install.sh` (a copy lives on the Mac mini at `~/Grokbot/youtube-plus/tizen-install.sh`)
+signs the unsigned trees from `build.py` with a Tizen Studio profile and installs both apps over
+sdb, updating them in place:
+
+```bash
+python3 platforms/tizen/launcher/build.py   # on the box -> build/tizen-launcher, tar to the Mac as
+                                            # ~/Grokbot/youtube-plus/tizen-launcher-trees.tgz
+~/Grokbot/youtube-plus/tizen-install.sh 192.168.1.232 --lan --launch                  # Living Room (Tizen 10)
+~/Grokbot/youtube-plus/tizen-install.sh 192.168.1.159 --profile Samsung-TV --launch   # Bedroom (Tizen 6)
+```
+
+`--lan` points the proxy at the TV's own IP; `--profile` picks the signing profile (default
+`YTPlus-Partner`); the script refuses to install when the profile's distributor certificate does
+not list the TV's DUID, and restarts the sdb server once if the TV refuses to connect. Signed
+packages land in `~/Grokbot/youtube-plus/out/tizen-launcher/<tv-ip>/`.

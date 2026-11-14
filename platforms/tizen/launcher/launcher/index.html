@@ -25,9 +25,15 @@ var TIMEOUT_MS = 45000;
 var statusEl = document.getElementById("status");
 function status(t) { statusEl.textContent = t; }
 
-function proxyUp() {
-  return fetch(HEALTH + "?t=" + Date.now(), { cache: "no-store" })
+function probeOne(url) {
+  return fetch(url + "?t=" + Date.now(), { cache: "no-store" })
     .then(function (r) { return r.ok; }, function () { return false; });
+}
+function proxyUp() {
+  // HEALTH is the address the player's proxy flag uses (set at build time); loopback as a fallback.
+  return probeOne(HEALTH).then(function (ok) {
+    return (ok || HEALTH.indexOf("127.0.0.2") >= 0) ? ok : probeOne("http://127.0.0.2:8101/__ytplus/health");
+  });
 }
 
 function openPlayer() {
@@ -47,11 +53,47 @@ function waitForProxy(t0) {
   });
 }
 
+// Tizen 9 and later start a web service only through the Service class of the wrt:service
+// module (as TV-Store 0.3.9 does); launchAppControl reports success there but the service
+// never runs. The module is loaded only on those TVs; older TVs use launchAppControl.
+function platformMajor() {
+  try { return parseInt(tizen.systeminfo.getCapability("http://tizen.org/feature/platform.version"), 10) || 0; }
+  catch (e) { return 0; }
+}
+function withWrtService(cb) {
+  if (platformMajor() < 9) return cb();
+  var done = false;
+  function once() { if (done) return; done = true; window.removeEventListener("ytp-wrt-service", once); cb(); }
+  window.addEventListener("ytp-wrt-service", once);
+  setTimeout(once, 3000);
+  try {
+    var s = document.createElement("script");
+    s.type = "module";
+    s.text = "import { Service } from 'wrt:service'; window.ytpService = Service; window.dispatchEvent(new Event('ytp-wrt-service'));";
+    s.onerror = once;
+    document.body.appendChild(s);
+  } catch (e) { once(); }
+}
+
 function start() {
   status("Starting\u2026");
   proxyUp().then(function (up) {
     if (up) return openPlayer();
     var t0 = Date.now();
+    withWrtService(function () { launchService(t0); });
+  });
+}
+
+function launchService(t0) {
+    if (typeof window.ytpService === "function") {
+      try {
+        var started = new window.ytpService(SERVICE).start();
+        report("wrt:service", "start called");
+        if (started && typeof started.then === "function")
+          started.then(function () { report("wrt:service", "ok"); }, function (e) { report("wrt:service", "ERR " + (e && e.message || e)); });
+        return waitForProxy(t0);
+      } catch (e) { report("wrt:service", "THREW " + (e && e.message || e)); }
+    }
     try {
       tizen.application.launchAppControl(
         new tizen.ApplicationControl("http://tizen.org/appcontrol/operation/service"),
@@ -59,7 +101,6 @@ function start() {
         function () { report("launchAppControl", "ok"); waitForProxy(t0); },
         function (e) { report("launchAppControl", "ERR " + e.name + ": " + e.message); status("Starting service (" + e.message + ")\u2026"); waitForProxy(t0); });
     } catch (e) { report("launchAppControl", "THREW " + e); waitForProxy(t0); }
-  });
 }
 
 // ---- optional diagnostics: report to a computer on the LAN (REPORT_URL empty = off) ----

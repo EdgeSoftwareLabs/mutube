@@ -6,7 +6,7 @@
                                                            -> build/webos/  (then: ares-package build/webos -o build)
   python3 platforms/build_platforms.py tizen-module        -> platforms/tizen/module/dist/{userScript,service}.js
   python3 platforms/build_platforms.py tizen-standalone --tizentube-src /path/to/TizenTube
-                                                           -> build/tizen-standalone/ (then: Tizen Studio / `tizen package -t wgt`)
+                                                           -> build/tizen-standalone/app (widget root, script bundled)
   python3 platforms/build_platforms.py all
 
 TizenTube (GPL-3.0, github.com/reisxd/TizenTube) is downloaded at build time at
@@ -28,7 +28,7 @@ YTPLUS = ROOT / "youtube-plus.js"
 TIZENTUBE_VERSION = "1.15.2"
 TT_NPM = f"https://cdn.jsdelivr.net/npm/@foxreis/tizentube@{TIZENTUBE_VERSION}"
 TT_URL_RE = re.compile(r"https://cdn\.jsdelivr\.net/npm/@foxreis/tizentube/dist/userScript\.js")
-# Where the Tizen module bundle is served from once the branch is pushed.
+# Where the Tizen module bundle (option A) is served from once it is pushed.
 TIZEN_BUNDLE_URL = "https://cdn.jsdelivr.net/gh/mistermassacre/mutube@youtube-plus/platforms/tizen/module/dist/userScript.js"
 
 
@@ -110,31 +110,107 @@ def build_tizen_module(_args):
     print("wrote", dist.relative_to(ROOT))
 
 
+# --------------------------------------------------------------------------- Tizen standalone
+# The standalone widget is TizenTube's standalone app (standalone/ in
+# reisxd/TizenTube, the commit whose package.json is 1.15.2) rebranded, with the
+# user script BUNDLED: TizenTube 1.15.2 + youtube-plus.js are compiled into the
+# service, which serves them itself. Nothing is fetched from jsDelivr for the
+# script, so the .wgt runs without TizenBrew and without any push.
+YTPLUS_PATH = "/__ytplus/userScript.js"
+
+# (file, old, new): every edit must match exactly once, so a changed TizenTube
+# layout fails the build instead of silently loading the CDN script.
+STANDALONE_PATCHES = [
+    # 1. Local proxy (http://localhost:8100/tv): serve the bundle and inject it.
+    ("service/index.js",
+     "app.get('/tizentube/getState', (req, res) => {",
+     "// YouTube +: the bundled TizenTube " + TIZENTUBE_VERSION + " + youtube-plus.js user script.\n"
+     "app.get('" + YTPLUS_PATH + "', (req, res) => {\n"
+     "    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');\n"
+     "    res.setHeader('Cache-Control', 'no-cache');\n"
+     "    res.send(require('./utils/ytplusBundle.js'));\n"
+     "});\n\n"
+     "app.get('/tizentube/getState', (req, res) => {"),
+    ("service/index.js",
+     'text += `<script src="https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?ver=${Date.now()}"></script>`;',
+     'text += `<script src="' + YTPLUS_PATH + '?ver=${Date.now()}"></script>`;'),
+    ("service/index.js", "`${packageId}.TizenTubeStandalone`", "`${packageId}.YouTubePlus`"),
+    # 2. Cobalt MITM proxy (https://www.youtube.com/tv on the native Cobalt app):
+    #    answer /__ytplus/ itself (same origin, so no mixed content) and inject it.
+    ("service/utils/cobaltProxyServer.js",
+     "                    const isTvPath =",
+     "                    if (request.url.indexOf('" + YTPLUS_PATH + "') === 0) {\n"
+     "                        const js = Buffer.from(require('./ytplusBundle.js'), 'utf8');\n"
+     "                        response.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8',\n"
+     "                            'content-length': js.length, 'cache-control': 'no-cache' });\n"
+     "                        return response.end(js);\n"
+     "                    }\n\n"
+     "                    const isTvPath ="),
+    ("service/utils/cobaltProxyServer.js",
+     '<script src="https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?ver=${Date.now()}"></script></body>',
+     '<script src="' + YTPLUS_PATH + '?ver=${Date.now()}"></script></body>'),
+    # 3. Developer-mode injector (CDP): evaluate the bundle instead of fetching it.
+    ("service/utils/injector.js",
+     "fetch('https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js').then(res => res.text())",
+     "Promise.resolve(require('./ytplusBundle.js'))"),
+    ("service/utils/injector.js", "${packageId}.TizenTubeStandalone", "${packageId}.YouTubePlus"),
+    # 4. Splash screen while the service starts.
+    ("index.html", "        TizenTube\n", "        YouTube +\n"),
+    ("index.html", "background-color: #0f0f0f;", "background-color: #000000;"),
+]
+
+
 def build_tizen_standalone(args):
+    """build/tizen-standalone/app  = widget root (package this)
+    build/tizen-standalone/dist   = TizenTube's DIAL service.js, which
+    standalone/service/index.js require()s as ../../../dist/service.js and ncc
+    inlines into service/dist/index.js (TizenTube's release does the same)."""
     if not args.tizentube_src:
         sys.exit("tizen-standalone needs --tizentube-src /path/to/TizenTube (git clone https://github.com/reisxd/TizenTube)")
-    src = Path(args.tizentube_src) / "standalone"
-    if not src.is_dir():
-        sys.exit(f"{src} not found")
-    out = BUILD / "tizen-standalone"
-    if out.exists():
-        shutil.rmtree(out)
-    shutil.copytree(src, out, ignore=shutil.ignore_patterns("node_modules"))
-    shutil.copy(PLAT / "tizen" / "standalone" / "config.xml", out / "config.xml")
+    tt_root = Path(args.tizentube_src)
+    tt_ver = json.loads((tt_root / "package.json").read_text()).get("version")
+    if tt_ver != TIZENTUBE_VERSION:
+        sys.exit(f"{tt_root} is TizenTube {tt_ver}, expected {TIZENTUBE_VERSION}")
+    src = tt_root / "standalone"
+    stage = BUILD / "tizen-standalone"
+    app = stage / "app"
+    if stage.exists():
+        shutil.rmtree(stage)
+    shutil.copytree(src, app, ignore=shutil.ignore_patterns("node_modules", "release", "*.wgt", "config.xml.bak"))
+    cfg = (PLAT / "tizen" / "standalone" / "config.xml").read_text()
+    (app / "config.xml").write_text(re.sub(r'(<widget\b[^>]*\bversion=")[^"]*"', r'\g<1>' + version() + '"', cfg, count=1))
     for name in ("icon.png", "icon_16b9.png"):
-        shutil.copy(PLAT / "tizen" / name, out / name)
-    changed = []
-    for f in list(out.rglob("*.js")) + list(out.rglob("*.html")):
-        text = f.read_text(encoding="utf-8", errors="surrogateescape")
-        new = TT_URL_RE.sub(args.bundle_url, text)
-        if f.name == "index.html":
-            new = re.sub(r">\s*TizenTube\s*<", ">YouTube +<", new)
-        if new != text:
-            f.write_text(new, encoding="utf-8", errors="surrogateescape")
-            changed.append(str(f.relative_to(out)))
-    print("patched:", ", ".join(changed) or "nothing (TizenTube layout changed?)")
-    print("next: cd", out / "service", "&& npm install && node build-service.js; then package", out,
-          "with Tizen Studio (or `tizen package -t wgt -s <cert-profile> -- " + str(out) + "`)")
+        shutil.copy(PLAT / "tizen" / name, app / name)
+
+    for rel, old, new in STANDALONE_PATCHES:
+        f = app / rel
+        text = f.read_text(encoding="utf-8")
+        n = text.count(old)
+        if n != 1:
+            sys.exit(f"patch failed: {rel}: expected 1 match, found {n}: {old[:70]!r}")
+        f.write_text(text.replace(old, new), encoding="utf-8")
+    left = [str(p.relative_to(app)) for p in app.rglob("*") if p.is_file() and p.suffix in (".js", ".html")
+            and "cdn.jsdelivr.net/npm/@foxreis/tizentube" in p.read_text(encoding="utf-8", errors="ignore")]
+    if left:
+        sys.exit(f"still loading TizenTube from jsDelivr: {left}")
+
+    tt = fetch(f"{TT_NPM}/dist/userScript.js").decode("utf-8")
+    bundle = (f"/* TizenTube {TIZENTUBE_VERSION} (GPL-3.0, https://github.com/reisxd/TizenTube) + YouTube + {version()} */\n"
+              + tt + "\n;\n" + YTPLUS.read_text())
+    (app / "service" / "utils" / "ytplusBundle.js").write_text(
+        "// Generated by platforms/build_platforms.py: TizenTube " + TIZENTUBE_VERSION + " + youtube-plus.js.\n"
+        "module.exports = " + json.dumps(bundle) + ";\n", encoding="utf-8")
+    (stage / "dist").mkdir()
+    # TizenTube's DIAL service (casting from phones) launches "<pkg>.TizenTubeStandalone".
+    service = fetch(f"{TT_NPM}/dist/service.js").decode("utf-8")
+    n = service.count("'TizenTubeStandalone'")
+    if n < 1:
+        sys.exit("patch failed: dist/service.js no longer names 'TizenTubeStandalone'")
+    (stage / "dist" / "service.js").write_text(service.replace("'TizenTubeStandalone'", "'YouTubePlus'"), encoding="utf-8")
+    print(f"wrote {app.relative_to(ROOT)} (bundle {len(bundle) // 1024} KB, {len(STANDALONE_PATCHES)} patches)")
+    print("next: cd", app / "service", "&& npm install && npm install --no-save @vercel/ncc && npm run build")
+    print("      then package only config.xml, index.html, icon*.png, service/dist/index.js:")
+    print("      tizen package -t wgt -s <cert-profile> -- <clean copy of", app.relative_to(ROOT), ">")
 
 
 def main():
@@ -142,8 +218,6 @@ def main():
     ap.add_argument("target", choices=["web", "webos", "tizen-module", "tizen-standalone", "all"])
     ap.add_argument("--with-tizentube", action="store_true", help="webOS: also bundle TizenTube (experimental)")
     ap.add_argument("--tizentube-src", help="tizen-standalone: path to a TizenTube checkout")
-    ap.add_argument("--bundle-url", default=TIZEN_BUNDLE_URL,
-                    help="tizen-standalone: URL of the TizenTube+YouTube+ bundle the service injects")
     args = ap.parse_args()
     targets = ["web", "webos", "tizen-module"] if args.target == "all" else [args.target]
     for t in targets:

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  "YouTube +" launcher (the tile Brandon opens). It owns the only copy of the TizenTube
+  proxy service (patched by patch_service.py), starts it, waits until
+  http://127.0.0.2:8101/__ytplus/health answers, then opens the player
+  (xvvl3S1TT1.TizenTubeStandalone = "YouTube + Player", which starts Samsung's YouTube
+  player with proxy 127.0.0.2:8101). The player package has no service of its own, so
+  nothing else competes for port 8101.
+  Why: Samsung TVs ignore the service's on-boot flag, and the player never runs its own
+  index.html (it opens the native player directly), so nobody started the proxy after a
+  restart. An app may start a service in its own package, so the launcher carries it.
+-->
+<widget xmlns:tizen="http://tizen.org/ns/widgets" xmlns="http://www.w3.org/ns/widgets" id="https://github.com/mistermassacre/mutube/launcher" version="1.0.0" viewmodes="maximized">
+    <access origin="*" subdomains="true"></access>
+    <tizen:allow-navigation href="*"/>
+    <tizen:application id="YTPlusLnch.YouTubePlus" package="YTPlusLnch" required_version="3.0"/>
+    <author href="https://github.com/mistermassacre/mutube">YouTube + (based on TizenTube by Reis Can)</author>
+    <content src="index.html"/>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <feature name="http://tizen.org/feature/web.service"/>
+    <icon src="icon.png" width="512" height="512"/>
+    <name>YouTube +</name>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:privilege name="http://tizen.org/privilege/unlimitedstorage"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.info"/>
+    <tizen:profile name="tv-samsung"/>
+    <tizen:service id="YTPlusLnch.ProxyService" auto-restart="true" on-boot="true">
+        <tizen:content src="service/dist/index.js"/>
+        <tizen:name>ProxyService</tizen:name>
+        <tizen:description>YouTube + proxy (TizenTube Cobalt 2.1.1 service, start-up fix)</tizen:description>
+    </tizen:service>
+    <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

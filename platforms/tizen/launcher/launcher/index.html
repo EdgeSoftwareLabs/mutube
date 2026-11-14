@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  img { width: 240px; height: 240px; }
+  h1 { font-size: 56px; margin: 8px 0 0; font-weight: 700; }
+  #status { margin-top: 24px; font-size: 28px; color: #aaa; min-height: 36px; }
+</style>
+</head>
+<body>
+<img src="icon.png" alt="">
+<h1>YouTube +</h1>
+<div id="status"></div>
+<script>
+// Make sure the proxy (this package's ProxyService) answers on 127.0.0.2:8101, then open
+// the player. 127.0.0.2 because loopback 127.0.0.1 is isolated per app on these TVs.
+"use strict";
+var SERVICE = tizen.application.getCurrentApplication().appInfo.packageId + ".ProxyService";
+var PLAYER = "xvvl3S1TT1.TizenTubeStandalone";
+var HEALTH = "http://127.0.0.2:8101/__ytplus/health";
+var TIMEOUT_MS = 45000;
+var statusEl = document.getElementById("status");
+function status(t) { statusEl.textContent = t; }
+
+function proxyUp() {
+  return fetch(HEALTH + "?t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) { return r.ok; }, function () { return false; });
+}
+
+function openPlayer() {
+  status("Opening YouTube +\u2026");
+  try {
+    tizen.application.launch(PLAYER, function () {
+      setTimeout(function () { tizen.application.getCurrentApplication().exit(); }, 500);
+    }, function (e) { status("Could not open YouTube + Player (" + e.message + "). Press OK to retry."); });
+  } catch (e) { status("Could not open YouTube + Player (" + e.message + "). Press OK to retry."); }
+}
+
+function waitForProxy(t0) {
+  proxyUp().then(function (up) {
+    if (up) return openPlayer();
+    if (Date.now() - t0 > TIMEOUT_MS) return status("The YouTube + service did not start. Press OK to retry.");
+    setTimeout(function () { waitForProxy(t0); }, 250);
+  });
+}
+
+function start() {
+  status("Starting\u2026");
+  proxyUp().then(function (up) {
+    if (up) return openPlayer();
+    var t0 = Date.now();
+    try {
+      tizen.application.launchAppControl(
+        new tizen.ApplicationControl("http://tizen.org/appcontrol/operation/service"),
+        SERVICE,
+        function () { waitForProxy(t0); },
+        function (e) { status("Starting service (" + e.message + ")\u2026"); waitForProxy(t0); });
+    } catch (e) { waitForProxy(t0); }
+  });
+}
+
+document.addEventListener("keydown", function (e) {
+  if (e.keyCode === 13) start();
+  if (e.keyCode === 10009) tizen.application.getCurrentApplication().exit();
+});
+start();
+</script>
+</body>
+</html>

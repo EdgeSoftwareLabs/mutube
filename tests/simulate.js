@@ -12,6 +12,7 @@ var store = {};
 var calls = [];
 var toasts = [];
 var nativeResolved = [];
+var popups = [];
 var win = {
   console: console,
   location: { hash: '#/' },
@@ -23,7 +24,8 @@ var win = {
 };
 var host = {
   resolveCommand: function (cmd) {
-    if (cmd.openPopupAction) toasts.push(cmd.openPopupAction.popup.overlayToastRenderer.subtitle.simpleText);
+    if (cmd.openPopupAction && cmd.openPopupAction.popupType === 'TOAST') toasts.push(cmd.openPopupAction.popup.overlayToastRenderer.subtitle.simpleText);
+    else if (cmd.openPopupAction) popups.push(cmd);
     else nativeResolved.push(cmd);
     return true;
   }
@@ -129,5 +131,97 @@ setTimeout(function () {
   var ids = Array.from(again.contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content.sectionListRenderer.contents[0].shelfRenderer.content.horizontalListRenderer.items, function (t) { return t.tileRenderer.contentId; });
   console.log('after refresh:', ids);
   assert.deepStrictEqual(ids, ['A', 'D']);
+  settingsTests();
   console.log('ALL OK', JSON.stringify(YP.stats()));
 }, 50);
+
+// ------------------------------------------------------------------ TizenTube settings
+// Fixtures are the exact commands TizenTube 1.15.2's own settings code sends to
+// resolveCommand (tests/make-tizentube-fixtures.mjs), in English and Turkish.
+function settingsTests() {
+  var fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'tizentube-1.15.2-settings.json'), 'utf8'));
+  var TEXT = { simpleText: 1, text: 1, content: 1, label: 1, title: 1, subtitle: 1, name: 1 };
+  function visibleStrings(node, acc) {
+    acc = acc || [];
+    if (node && typeof node === 'object') {
+      Object.keys(node).forEach(function (k) {
+        var v = node[k];
+        if (typeof v === 'string') { if (TEXT[k] && v.indexOf('://') === -1) acc.push(v); }
+        else visibleStrings(v, acc);
+      });
+    }
+    return acc;
+  }
+  function panel(cmd) { return cmd.openPopupAction.popup.overlaySectionRenderer.overlay.overlayTwoPanelRenderer.actionPanel.overlayPanelRenderer; }
+  function show(cmd) { popups.length = 0; host.resolveCommand(JSON.parse(JSON.stringify(cmd))); assert.strictEqual(popups.length, 1); return popups[0]; }
+  var info = YP.config.labels.dearrowInfo;
+
+  Object.keys(fx.languages).forEach(function (lng) {
+    var f = fx.languages[lng];
+    var before = panel(f.main).content.overlayPanelItemListRenderer.items;
+    assert.strictEqual(before[0].compactLinkRenderer.icon.iconType, 'MONEY_HEART');
+    assert.strictEqual(before[1].compactLinkRenderer.icon.iconType, 'PRIVACY_UNLISTED');
+
+    var main = show(f.main), p = panel(main), list = p.content.overlayPanelItemListRenderer;
+    var icons = list.items.map(function (i) { return i.compactLinkRenderer.icon.iconType; });
+    console.log(lng, 'settings:', p.header.overlayPanelHeaderRenderer.title.simpleText, '|', list.items.map(function (i) { return i.compactLinkRenderer.title.simpleText; }).join(' / '));
+    assert.strictEqual(list.items.length, before.length - 2, 'Support + social removed');
+    assert.ok(icons.indexOf('MONEY_HEART') === -1 && icons.indexOf('PRIVACY_UNLISTED') === -1);
+    assert.strictEqual(icons[0], 'DOLLAR_SIGN', 'Ad Block is first');
+    assert.ok(!p.header.overlayPanelHeaderRenderer.subtitle, '"Made by" subtitle removed');
+    assert.ok(/YouTube \+/.test(p.header.overlayPanelHeaderRenderer.title.simpleText));
+    var leftovers = visibleStrings(main).filter(function (t) { return /TizenTube|reisxd/.test(t); });
+    assert.deepStrictEqual(leftovers, [], 'no visible TizenTube / reisxd text: ' + leftovers.join(' | '));
+    assert.ok(JSON.stringify(main).indexOf('setClientSettingEndpoint') !== -1, 'toggles still wired');
+
+    // After toggling Ad Block (original row 2) TizenTube re-opens with selectedIndex 2.
+    var again = panel(show(f.mainAfterToggle)).content.overlayPanelItemListRenderer;
+    assert.strictEqual(again.selectedIndex, 0);
+    assert.strictEqual(again.items[again.selectedIndex].compactLinkRenderer.icon.iconType, 'DOLLAR_SIGN');
+
+    var da = show(f.dearrow), hdr = panel(da).header.overlayPanelHeaderRenderer;
+    console.log(lng, 'DeArrow header:', JSON.stringify(hdr.subtitle.simpleText));
+    assert.strictEqual(hdr.subtitle.simpleText, 'https://dearrow.ajay.app/\n' + info);
+    YP.patchPopup(da);
+    assert.strictEqual(panel(da).header.overlayPanelHeaderRenderer.subtitle.simpleText, 'https://dearrow.ajay.app/\n' + info, 'idempotent');
+
+    // YouTube's Settings page entry TizenTube adds through JSON.parse.
+    var yt = JSON.parse(JSON.stringify(f.ytSettingsResponse));
+    var act = yt.items[0].settingCategoryCollectionRenderer.items[0].settingActionRenderer;
+    console.log(lng, 'YT settings entry:', act.title.runs[0].text, '|', act.summary.runs[0].text);
+    assert.deepStrictEqual(visibleStrings(yt).filter(function (t) { return /TizenTube/.test(t); }), []);
+    assert.strictEqual(yt.items[0].settingCategoryCollectionRenderer.categoryId, 'tizentube_category', 'ids untouched');
+  });
+
+  // Toasts TizenTube shows with the literal title 'TizenTube'.
+  var tt = { openPopupAction: { popupType: 'TOAST', popup: { overlayToastRenderer: { title: { simpleText: 'TizenTube' }, subtitle: { simpleText: 'Welcome to TizenTube' } } } } };
+  host.resolveCommand(tt);
+  assert.strictEqual(tt.openPopupAction.popup.overlayToastRenderer.title.simpleText, 'YouTube +');
+  assert.strictEqual(toasts[toasts.length - 1], 'Welcome to YouTube +');
+
+  // Playback-settings speed rows: TizenTube sets 'with TizenTube' in its own
+  // wrapper, either before (it is outer) or after (it is inner) ours.
+  function playback() {
+    return { openPopupAction: { popupType: 'MODAL', uniqueId: 'playback-settings', popup: { overlaySectionRenderer: { overlay: { overlayTwoPanelRenderer: { actionPanel: { overlayPanelRenderer: {
+      header: { overlayPanelHeaderRenderer: { title: { simpleText: 'Settings' } } },
+      content: { overlayPanelItemListRenderer: { items: [{ compactLinkRenderer: { icon: { iconType: 'SPEEDOMETER' }, title: { simpleText: 'Speed' }, subtitle: { simpleText: 'Normal' } } }] } } } } } } } } } };
+  }
+  var ours = host.resolveCommand;
+  var inner = playback();
+  panel(inner).content.overlayPanelItemListRenderer.items[0].compactLinkRenderer.subtitle.simpleText = 'with TizenTube';
+  ours(inner);    // TizenTube outer: already set when we see it
+  var outer = playback();
+  // Ours outer, TizenTube inner: we patch first, TizenTube assigns afterwards.
+  YP.patchPopup(outer);
+  panel(outer).content.overlayPanelItemListRenderer.items[0].compactLinkRenderer.subtitle.simpleText = 'with TizenTube';
+  [inner, outer].forEach(function (c) {
+    assert.strictEqual(panel(c).content.overlayPanelItemListRenderer.items[0].compactLinkRenderer.subtitle.simpleText, 'with YouTube +');
+  });
+
+  // Unrelated YouTube popups are left alone (URLs never rewritten).
+  var other = { openPopupAction: { popupType: 'MODAL', uniqueId: 'x', popup: { overlaySectionRenderer: { overlay: { overlayTwoPanelRenderer: { actionPanel: { overlayPanelRenderer: {
+    header: { overlayPanelHeaderRenderer: { title: { simpleText: 'Report' }, subtitle: { simpleText: 'https://github.com/reisxd/TizenTube' } } } } } } } } } } };
+  host.resolveCommand(other);
+  assert.strictEqual(panel(other).header.overlayPanelHeaderRenderer.subtitle.simpleText, 'https://github.com/reisxd/TizenTube');
+  console.log('settings OK');
+}

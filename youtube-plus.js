@@ -56,6 +56,13 @@
  *       get_panel / feedback on the tvOS 4.54.01 build (TizenTube relies on
  *       the same call there for "Go to channel").
  *
+ * SETTINGS REBRAND (CFG.rebrandSettings)
+ *   TizenTube's own settings screens are rewritten as they are opened: every
+ *   user-visible "TizenTube" becomes "YouTube +", the "Made by ..." subtitle and
+ *   the Support / social-media entries are removed, and DeArrow's page gets a
+ *   one-line explanation under its link. TizenTube is GPL-3.0 by Reis Can
+ *   (reisxd); the credit stays in this repo's README and NOTICE.
+ *
  * DEBUG
  *   localStorage.setItem('ytplus.debug', '1')  (or window.YTPLUS_CONFIG =
  *   {debug: true} before this script runs) logs every patched tile and every
@@ -69,7 +76,7 @@
   if (W.__ytPlusLoaded) return;
   W.__ytPlusLoaded = true;
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var ACTION_NOT_INTERESTED = 'YTPLUS_NOT_INTERESTED';
   var ACTION_DONT_RECOMMEND = 'YTPLUS_DONT_RECOMMEND_CHANNEL';
   var MAX_LOCAL = 1000;
@@ -86,6 +93,11 @@
     // one: Play, Save to Watch Later, Save to playlist + our two items.
     buildMenuIfMissing: true,
     toasts: true,
+    // Rebrand TizenTube's settings UI: "TizenTube" -> brandName in every text it
+    // shows, drop the "Made by ..." line and the Support / social media entries,
+    // and explain DeArrow under its website link.
+    rebrandSettings: true,
+    brandName: 'YouTube +',
     labels: {
       notInterested: 'Not interested',
       dontRecommend: "Don't recommend channel",
@@ -94,7 +106,8 @@
       toastDontRecommend: "Got it. We won't recommend this channel.",
       toastLocalVideo: 'Hidden on this device (YouTube gave no feedback token).',
       toastLocalChannel: 'Channel hidden on this device (YouTube gave no feedback token).',
-      toastError: 'Could not send feedback. Hidden on this device instead.'
+      toastError: 'Could not send feedback. Hidden on this device instead.',
+      dearrowInfo: 'DeArrow replaces clickbait titles and thumbnails with community-submitted, more accurate ones.'
     }
   };
 
@@ -134,7 +147,8 @@
     try { (W.console.warn || W.console.log).apply(W.console, args); } catch (e) { /* ignore */ }
   }
 
-  var stats = { responses: 0, tiles: 0, itemsAdded: 0, withPanel: 0, withToken: 0, noToken: 0, filtered: 0, clicks: 0 };
+  var stats = { responses: 0, tiles: 0, itemsAdded: 0, withPanel: 0, withToken: 0, noToken: 0, filtered: 0, clicks: 0,
+    settingsPatched: 0, settingsRemoved: 0, rebranded: 0 };
 
   // ---------------------------------------------------------------- helpers
   function isObj(v) { return v !== null && typeof v === 'object'; }
@@ -466,6 +480,7 @@
     var wrapper = function () {
       var r = base.apply(this, arguments);
       if (wrapper !== activeWrapper) return r;
+      if (CFG.rebrandSettings && isObj(r) && r.items) { try { rebrandResponse(r); } catch (e) { /* ignore */ } }
       return processResponse(r);
     };
     wrapper.__ytPlus = true;
@@ -485,6 +500,158 @@
           if (y[k] && y[k].JSON && y[k].JSON.parse && y[k].JSON.parse !== activeWrapper) y[k].JSON.parse = activeWrapper;
         } catch (e) { /* ignore */ }
       }
+    }
+  }
+
+  // ---------------------------------------------------------------- TizenTube settings UI
+  // Targets TizenTube 1.15.2 (mods/ui/settings.js, ui/ytUI.js, ui/customYTSettings.js,
+  // resolveCommand.js). Its settings screens are MODAL openPopupAction commands sent
+  // through instance.resolveCommand:
+  //   uniqueId 'tt-settings'          main list; header {title: settings.ttSettings.title,
+  //                                    subtitle: settings.ttSettings.madeByText}; items are
+  //                                    compactLinkRenderer buttons, [0] Support TizenTube
+  //                                    (icon MONEY_HEART, OPTIONS_SHOW with a customUI
+  //                                    content page), [1] social media links (icon
+  //                                    PRIVACY_UNLISTED, OPTIONS_SHOW with GitHub / Discord /
+  //                                    Telegram / Buy Me A Coffee QR pages).
+  //   uniqueId 'tt-settings-options'  sub-menus; DeArrow's header subtitle is the literal
+  //                                    'https://dearrow.ajay.app/'.
+  // Strings come from i18next, so items are matched by structure (icons, links), never
+  // by English text, and the rewrite works in every language.
+  var TT_TEXT_KEYS = { simpleText: 1, text: 1, content: 1, label: 1, title: 1, subtitle: 1, name: 1 };
+  var TT_NAME_RE = /TizenTube(?:[ -]Cobalt)?/g;
+  var DEARROW_URL_RE = /^https?:\/\/dearrow\.ajay\.app\/?$/;
+
+  function rebrandText(v) {
+    if (typeof v !== 'string' || v.indexOf('TizenTube') === -1 || v.indexOf('://') !== -1) return v;
+    stats.rebranded++;
+    return v.replace(TT_NAME_RE, CFG.brandName);
+  }
+  // Replace the name in user-visible text fields of a renderer tree (URLs untouched).
+  function rebrandTree(node, depth) {
+    if (!isObj(node) || depth > 40) return;
+    var k, v, i;
+    if (isArr(node)) { for (i = 0; i < node.length; i++) rebrandTree(node[i], depth + 1); return; }
+    for (k in node) {
+      if (!node.hasOwnProperty(k)) continue;
+      v = node[k];
+      if (typeof v === 'string') { if (TT_TEXT_KEYS[k]) node[k] = rebrandText(v); }
+      else if (isObj(v) && k !== 'thumbnails' && k !== 'qrCodeRenderer') rebrandTree(v, depth + 1);
+    }
+  }
+
+  function linkCommands(item) {
+    return get(item, 'compactLinkRenderer.serviceEndpoint.commandExecutorCommand.commands') || [];
+  }
+  function optionsShowParams(item) {
+    var cmds = linkCommands(item), i;
+    for (i = 0; i < cmds.length; i++) {
+      if (get(cmds[i], 'customAction.action') === 'OPTIONS_SHOW') return cmds[i].customAction.parameters || {};
+    }
+    return null;
+  }
+  function hasLink(options, re) {
+    var i, sub;
+    if (!isArr(options)) return false;
+    for (i = 0; i < options.length; i++) {
+      sub = get(options[i], 'options.subtitle');
+      if (typeof sub === 'string' && re.test(sub)) return true;
+    }
+    return false;
+  }
+  var SOCIAL_RE = /github\.com\/reisxd|discord\.gg\/|t\.me\/tizentube|buymeacoffee\.com\/reisxd|youtube\.com\/@tizenbrew/i;
+  // 'support' | 'social' | null
+  function ttSettingsKind(item) {
+    var p = optionsShowParams(item), icon = get(item, 'compactLinkRenderer.icon.iconType');
+    if (!p) return null;
+    // settings.supportTT: OPTIONS_SHOW of a single customUI text page
+    // (scrollPaneRenderer of messages) behind the MONEY_HEART icon.
+    if (isObj(p.options) && !isArr(p.options) && p.update === 'customUI' &&
+        (icon === 'MONEY_HEART' || get(p.options, 'content.scrollPaneRenderer'))) return 'support';
+    if (hasLink(p.options, SOCIAL_RE)) return 'social';
+    return null;
+  }
+
+  function modalParts(cmd) {
+    var pop = cmd && cmd.openPopupAction;
+    var panel = pop && get(pop, 'popup.overlaySectionRenderer.overlay.overlayTwoPanelRenderer.actionPanel.overlayPanelRenderer');
+    if (!panel) return null;
+    return { id: pop.uniqueId, header: get(panel, 'header.overlayPanelHeaderRenderer'), list: get(panel, 'content.overlayPanelItemListRenderer') };
+  }
+
+  function patchTTPopup(cmd) {
+    var pop = cmd && cmd.openPopupAction, m, items, kept, i, kind, removedBefore, sel;
+    if (!pop) return;
+    m = modalParts(cmd);
+    if (m && m.id === 'tt-settings') {
+      // Drop "Made by Reis Can (reisxd) with <3" (settings.ttSettings.madeByText).
+      if (m.header && m.header.subtitle) delete m.header.subtitle;
+      items = m.list && m.list.items;
+      if (isArr(items)) {
+        kept = []; removedBefore = 0;
+        sel = typeof m.list.selectedIndex === 'number' ? m.list.selectedIndex : 0;
+        for (i = 0; i < items.length; i++) {
+          kind = ttSettingsKind(items[i]);
+          if (kind) { if (i < sel) removedBefore++; stats.settingsRemoved++; continue; }
+          kept.push(items[i]);
+        }
+        if (kept.length !== items.length) {
+          m.list.items = kept;
+          // TizenTube re-opens the list with the ORIGINAL index of the toggled
+          // row (SETTINGS_UPDATE parameters), so shift it past the removed rows.
+          m.list.selectedIndex = Math.max(0, Math.min(kept.length - 1, sel - removedBefore));
+        }
+      }
+      stats.settingsPatched++;
+    }
+    if (m && m.header && m.header.subtitle && DEARROW_URL_RE.test(textOf(m.header.subtitle)) &&
+        textOf(m.header.subtitle).indexOf('\n') === -1) {
+      // Keep the link, explain DeArrow below it (TizenTube's ui.css makes the
+      // panel header subtitle pre-wrap, so the newline renders as a line break).
+      m.header.subtitle = { simpleText: textOf(m.header.subtitle) + '\n' + CFG.labels.dearrowInfo };
+      stats.settingsPatched++;
+    }
+    if (pop.uniqueId === 'playback-settings') guardSpeedSubtitles(m);
+    rebrandTree(pop.popup, 0);
+  }
+
+  // TizenTube rewrites the speed rows of the native playback-settings popup to
+  // t('player.withTizenTube') inside its own resolveCommand wrapper. If that wrapper
+  // runs after ours, catch the assignment with a setter.
+  function guardSpeedSubtitles(m) {
+    var items = m && m.list && m.list.items, i, sub;
+    if (!isArr(items) || !Object.defineProperty) return;
+    for (i = 0; i < items.length; i++) {
+      sub = get(items[i], 'compactLinkRenderer.subtitle');
+      if (!isObj(sub) || sub.__ytPlusGuard) continue;
+      (function (o) {
+        var val = rebrandText(o.simpleText);
+        try {
+          Object.defineProperty(o, 'simpleText', { configurable: true, enumerable: true,
+            get: function () { return val; }, set: function (v) { val = rebrandText(v); } });
+          Object.defineProperty(o, '__ytPlusGuard', { value: true });
+        } catch (e) { /* ignore */ }
+      })(sub);
+    }
+  }
+
+  // YouTube's own Settings page: TizenTube's JSON.parse hook prepends a
+  // settingCategoryCollectionRenderer 'tizentube_category' (customYTSettings.js).
+  function rebrandResponse(r) {
+    var items = r && r.items, i;
+    if (!isArr(items) || !r.title) return;
+    for (i = 0; i < items.length; i++) {
+      if (get(items[i], 'settingCategoryCollectionRenderer.categoryId') === 'tizentube_category') rebrandTree(items[i], 0);
+    }
+  }
+
+  // TizenTube's hidden theme panel (ui.js) is plain DOM with an <h1>.
+  function rebrandDom() {
+    var d = W.document, hs, i;
+    if (!d || !d.getElementsByTagName) return;
+    hs = d.getElementsByTagName('h1');
+    for (i = 0; i < hs.length; i++) {
+      if (hs[i].textContent && hs[i].textContent.indexOf('TizenTube') !== -1) hs[i].textContent = rebrandText(hs[i].textContent);
     }
   }
 
@@ -513,6 +680,9 @@
       if (a) {
         try { handleAction(a.action, a.parameters || {}); } catch (e) { warn('action failed', e); }
         return true;
+      }
+      if (CFG.rebrandSettings && cmd && cmd.openPopupAction) {
+        try { patchTTPopup(cmd); } catch (e) { warn('settings patch failed', e); }
       }
       return orig.apply(this, arguments);
     };
@@ -615,10 +785,11 @@
     ticks++;
     installParseHook();
     installCommandHook();
+    if (CFG.rebrandSettings && ticks % 8 === 0) rebrandDom();
     // Keep checking quickly during startup (TizenTube loads async), then slowly.
     if (ticks === 240) {
       clearInterval(timer);
-      setInterval(function () { installParseHook(); installCommandHook(); }, 5000);
+      setInterval(function () { installParseHook(); installCommandHook(); if (CFG.rebrandSettings) rebrandDom(); }, 5000);
     }
   }, 250);
 
@@ -627,6 +798,7 @@
     config: CFG,
     stats: function () { return stats; },
     process: processResponse,
+    patchPopup: patchTTPopup,
     handleAction: handleAction,
     rehook: function () { installParseHook(); installCommandHook(); },
     clearHidden: function () { lsSet('hiddenVideos', '[]'); lsSet('hiddenChannels', '[]'); },

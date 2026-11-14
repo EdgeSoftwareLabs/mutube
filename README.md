@@ -17,6 +17,24 @@ SponsorBlock, extra player controls) and adds its own feature:
 | Browser | Tampermonkey script for youtube.com/tv | Ready |
 | iPhone / iPad | rebranded sideload build | Plan only ([platforms/ios](platforms/ios/README.md)) |
 
+## Settings screen
+
+TizenTube's settings screen (opened from YouTube's Settings, shown as
+"YouTube + Settings") is rebranded at runtime by `youtube-plus.js`, because
+TizenTube itself still loads unmodified from its CDN:
+
+- every user-visible "TizenTube" reads "YouTube +" (any UI language);
+- the "Made by ..." line and the Support / social-media entries are hidden;
+- DeArrow's page keeps its website link and explains below it that DeArrow
+  replaces clickbait titles and thumbnails with community-submitted ones.
+
+The rows are matched by structure (icons, links), not English text, against
+TizenTube 1.15.2's `mods/ui/settings.js`. `tests/simulate.js` replays the exact
+commands that code produces (`tests/fixtures/`, regenerate with
+`tests/make-tizentube-fixtures.mjs`). Set `YTPLUS_CONFIG = {rebrandSettings:
+false}` to turn it off. The credit to TizenTube and its author stays here and
+in [NOTICE](NOTICE).
+
 ## How the Home menu feature works
 
 `youtube-plus.js` (ES5, no dependencies) wraps `JSON.parse`, which the TV
@@ -77,8 +95,8 @@ make PRINTF_LOGS=1   # printf tracing in the native stubs
 ### Usage
 
 Sideload `youtube-plus.ipa` with a tool like [Sideloadly](https://sideloadly.io/).
-On launch TizenTube shows its popup in the top right corner; long-press a Home
-tile to see the two new items.
+On launch a "Welcome to YouTube +" toast appears in the top right corner;
+long-press a Home tile to see the two new items.
 
 ## Tizen, webOS, browser, iOS
 
@@ -94,11 +112,24 @@ Details: [Tizen](platforms/tizen/README.md), [webOS](platforms/webos/README.md),
 
 ## Icon
 
-`icons/youtube-plus.svg` is the master (original artwork in YouTube's app-icon
-style: red rounded play button, white triangle, red "+" badge).
-`python3 icons/generate_icons.py` (needs `cairosvg`, `Pillow`) regenerates
-every platform size. `icon-preview.png` is a 1024px preview.
+Original artwork in YouTube's app-icon style (red rounded play button, white
+triangle, red "+" badge) on an iridescent pastel gradient with a dark vignette,
+and a white "YouTube +" wordmark in Google Sans Bold (`icons/fonts`, SIL OFL).
+`python3 icons/generate_icons.py` (needs `cairosvg`, `Pillow`, `numpy`)
+regenerates every platform size:
+
+- Apple TV: two-layer parallax icon (logo and wordmark over the gradient), Top
+  Shelf 1920x720 and 2320x720 (@1x/@2x) with logo and wordmark centred as a
+  group, and the launch image. Previews: `icons/png/youtube-plus-tvos-1280x768.png`,
+  `icons/png/youtube-plus-topshelf-1920x720.png`.
+- iOS, Tizen, webOS, web: square icon (gradient + logo); the 16:9 Tizen tile and
+  webOS splash use the Top Shelf layout. `icons/youtube-plus.svg` is a vector
+  approximation, `icons/youtube-plus-logo.svg` the bare logo.
 
 YouTube is a trademark of Google LLC. This is an unofficial personal project,
-not affiliated with or endorsed by Google. TizenTube is GPL-3.0; bundles that
-include it (Tizen module, optional webOS build) must follow its license.
+not affiliated with or endorsed by Google.
+
+YouTube + is built on [TizenTube](https://github.com/reisxd/TizenTube) by
+Reis Can (reisxd) and contributors, GPL-3.0. Hiding TizenTube's name and links in
+the TV UI does not change its license or authorship; bundles that include it
+(Tizen module, optional webOS build) must follow its license. See [NOTICE](NOTICE).

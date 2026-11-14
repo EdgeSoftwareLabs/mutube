@@ -1,0 +1,28 @@
+YouTube +
+=========
+
+Unofficial personal project. YouTube is a trademark of Google LLC; this project
+is not affiliated with or endorsed by Google.
+
+Third-party components
+----------------------
+
+TizenTube
+  Copyright (c) Reis Can (reisxd) and TizenTube contributors
+  https://github.com/reisxd/TizenTube
+  License: GNU General Public License v3.0 only (GPL-3.0-only)
+  Loaded at runtime from https://cdn.jsdelivr.net/npm/@foxreis/tizentube
+  (inject.js) and bundled by the Tizen module / optional webOS build
+  (platforms/build_platforms.py). youtube-plus.js renames TizenTube's settings
+  screen in the TV UI to "YouTube +" and hides its support / social links; that
+  is a cosmetic change only. TizenTube's copyright and license are unchanged,
+  and this notice and the README keep the credit.
+
+MuTube (mutube)
+  The tvOS patcher this project grew from (patcher.py, inject.js).
+
+Google Sans (icons/fonts/GoogleSans-*.ttf)
+  Copyright 2025 The Google Sans Project Authors
+  https://github.com/googlefonts/googlesans
+  License: SIL Open Font License 1.1 (icons/fonts/OFL.txt). Static Bold and
+  Medium instances, subset to Basic Latin, used only to render the icons.

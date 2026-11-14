@@ -234,6 +234,26 @@ def square_icon(px):
     return c if px == S else c.resize((px, px), Image.LANCZOS)
 
 
+# Centre of the play button (the gradient rounded rectangle) on the 1024 grid, after
+# the translate(-35 57) in logo_group(): rect 182..842 x 282..742.
+BUTTON_CX, BUTTON_CY = 182 + 660 / 2 - 35, 282 + 460 / 2 + 57
+
+
+def square_icon_centered(px):
+    """Square E2 icon with the play button (not the button + badge box) exactly in the
+    centre; the "+" badge overhangs towards the top-right corner. Used for Samsung
+    Tizen, whose launcher tile made the box-centred icon look off-centre."""
+    S = 1024
+    c = black(S, S)
+    vis_h = 0.55 * S                       # same logo size as square_icon()
+    im, _, _ = logo_image(vis_h)
+    k = im.width / 1024
+    L = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    L.alpha_composite(im, (int(round(S / 2 - BUTTON_CX * k)), int(round(S / 2 - BUTTON_CY * k))))
+    with_glow(c, L, vis_h)
+    return c if px == S else c.resize((px, px), Image.LANCZOS)
+
+
 def save(img, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     img.convert("RGB").save(path, optimize=True)
@@ -381,10 +401,12 @@ def main():
     # iOS asset catalog (for a re-signed iOS build, see platforms/ios/README.md).
     ios_catalog(ROOT / "platforms" / "ios" / "Assets.xcassets", icon)
 
-    # Tizen: square icon (512 recommended, 1024 accepted) + 16:9 tile.
+    # Tizen: square icon (512 recommended, 1024 accepted), play button centred on the
+    # canvas (see square_icon_centered), + 16:9 tile.
     tz = ROOT / "platforms" / "tizen"
-    save(sq(512), tz / "icon.png")
-    save(sq(1024), tz / "icon_1024.png")
+    tz_icon = square_icon_centered(1024)
+    save(tz_icon.resize((512, 512), Image.LANCZOS), tz / "icon.png")
+    save(tz_icon, tz / "icon_1024.png")
     wide = t1c_layout(1920, 1080)
     save(wide, tz / "icon_16b9.png")
 

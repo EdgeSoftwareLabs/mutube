@@ -50,13 +50,18 @@ YouTube + additions have not been tested on a device yet.
 1. `uv` (used to run `patcher.py` and resolve script dependencies)
 2. Xcode Command Line Tools (`xcrun` + `clang` with the AppleTV SDK); full
    Xcode for `make ICONS=1`
-3. A decrypted YouTube 4.54.01 IPA at `ipa/YouTube_4.54.01_decrypted.ipa`
+3. A decrypted YouTube 4.54.01 IPA at `ipa/YouTube_4.54.01_decrypted.ipa`.
+   An IPA already patched by MuTube (or YouTube +) also works: the patcher
+   detects it, restores the original instructions from its stubs and zeroes
+   the header padding, then patches again. (Checked: unpatching the 4.54.01
+   MuTube build and re-patching it with MuTube's inject.js gives the same
+   bytes.)
 
 ### Build
 
 ```bash
 make                 # -> youtube-plus.ipa, display name "YouTube +"
-make ICONS=1         # also replace app icon + Top Shelf (experimental, see platforms/tvos)
+make ICONS=1         # also replace app icon, Top Shelf and launch image (see platforms/tvos)
 make EMBED=0         # load youtube-plus.js from jsDelivr instead of embedding it
 make PRINTF_LOGS=1   # printf tracing in the native stubs
 ```

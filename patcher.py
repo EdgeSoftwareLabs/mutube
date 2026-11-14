@@ -563,6 +563,86 @@ def patch_binary(data, enable_printf_logs=False, js=None):
     return out
 
 
+RET_WORD = 0xD65F03C0
+
+
+def _encode_branch(mnemonic, op_str, pc):
+    # Re-encode the two original branch forms listed in COBALT_HDR_PATCHES.
+    target = int(op_str.split("#")[-1], 16)
+    off = (target - pc) >> 2
+    if mnemonic == "cbz" and op_str.startswith("w"):
+        rt = int(op_str.split(",")[0][1:])
+        return 0x34000000 | ((off & 0x7FFFF) << 5) | rt
+    if mnemonic == "b":
+        return 0x14000000 | (off & 0x3FFFFFF)
+    raise ValueError(f"cannot encode {mnemonic} {op_str}")
+
+
+def is_mutube_patched(data):
+    # True if the first hook site already branches into the header padding.
+    info = parse_macho_info(bytes(data))
+    p = PATCHES[0]
+    _, _, _, ins = resolve_patch_site(data, info, p["entry_va"])
+    return ins.mnemonic == "bl"
+
+
+def unpatch_mutube(data):
+    """Undo a previous MuTube/YouTube + patch in place.
+
+    MuTube changes exactly: (1) one instruction per hook site (-> BL stub),
+    (2) the three COBALT_HDR_PATCHES words, (3) bytes in the __TEXT header
+    padding [end of load commands, __text). Each stub ends with the displaced
+    original instruction followed by RET, so (1) is recovered from the stub
+    itself and checked against PATCHES/COBALT_HOOKS "expect"; (2) is
+    re-encoded from "expect"; (3) is zeroed (padding is zero in Apple-built
+    binaries). The result then passes the normal patch_binary() checks.
+    Verified on the 4.54.01 MuTube build: unpatch + re-patch with MuTube's own
+    inject.js reproduces that build byte for byte.
+    """
+    info = parse_macho_info(bytes(data))
+    start, end = info["header_end"], info["text_off"]
+    restored = []
+    for p in PATCHES + COBALT_HOOKS:
+        site_va, site_off, _, ins = resolve_patch_site(data, info, p["entry_va"])
+        if (ins.mnemonic, ins.op_str) == p["expect"]:
+            continue
+        if ins.mnemonic != "bl":
+            raise ValueError(f"{p['name']}: unexpected {ins.mnemonic} {ins.op_str} at {hex(site_va)}")
+        stub_va = int(ins.op_str.split("#")[-1], 16)
+        stub_off = info["text_seg_off"] + (stub_va - info["text_seg_va"])
+        if not (start <= stub_off < end):
+            raise ValueError(f"{p['name']}: BL target {hex(stub_va)} is not in the header padding")
+        orig = None
+        for off in range(stub_off, end - 4, 4):
+            if read_u32(data, off + 4) != RET_WORD:
+                continue
+            word = read_u32(data, off)
+            d = next(MD.disasm(struct.pack("<I", word), site_va), None)
+            if d is not None and (d.mnemonic, d.op_str) == p["expect"]:
+                orig = word
+                break
+        if orig is None:
+            raise ValueError(f"{p['name']}: displaced instruction not found in stub at {hex(stub_va)}")
+        data[site_off:site_off + 4] = struct.pack("<I", orig)
+        restored.append(p["name"])
+    for patch in COBALT_HDR_PATCHES:
+        off = va_to_off(info, patch["va"])
+        word = read_u32(data, off)
+        cur = disasm_one(struct.pack("<I", word), patch["va"])
+        if (cur.mnemonic, cur.op_str) == patch["expect"]:
+            continue
+        if word != patch["replacement"]:
+            raise ValueError(f"{patch['name']}: unexpected word {word:#010x} at {hex(patch['va'])}")
+        orig = _encode_branch(patch["expect"][0], patch["expect"][1], patch["va"])
+        d = disasm_one(struct.pack("<I", orig), patch["va"])
+        if (d.mnemonic, d.op_str) != patch["expect"]:
+            raise ValueError(f"{patch['name']}: re-encoded {d.mnemonic} {d.op_str} != {patch['expect']}")
+        data[off:off + 4] = struct.pack("<I", orig)
+        restored.append(patch["name"])
+    data[start:end] = bytes(end - start)
+    return restored
+
+
 def find_app_dir(names):
     # Top-level app bundle inside the IPA, e.g. "Payload/YouTubeUnstable.app/".
     for n in names:
@@ -598,10 +678,12 @@ def _assetutil_names(car_path):
 def compile_tvos_icons(xcassets, original_car, min_os, force=False):
     """Compile platforms/tvos/Assets.xcassets with actool (Xcode, macOS only).
 
-    Returns (assets_car_bytes, partial_info_plist_dict). UNTESTED: no decrypted
-    IPA or Mac was available when this was written. Asset catalogs cannot be
-    merged, so the new Assets.car replaces the original one; we refuse unless
-    every rendition name in the original car also exists in ours (or force).
+    The catalog uses the asset names the 4.54.01 IPA's Info.plist already
+    references (AppIconSmall, TopShelfImage, Top Shelf Image Wide,
+    LaunchImage), so the compiled Assets.car is a drop-in replacement and
+    Info.plist is left alone. Asset catalogs cannot be merged, so we refuse
+    unless every rendition name in the original car also exists in ours
+    (or force). Returns (assets_car_bytes, {}).
     """
     if sys.platform != "darwin" or not shutil.which("xcrun"):
         raise RuntimeError("--tvos-icons needs macOS with Xcode (xcrun actool / assetutil)")
@@ -615,7 +697,7 @@ def compile_tvos_icons(xcassets, original_car, min_os, force=False):
             "--platform", "appletvos",
             "--target-device", "tv",
             "--minimum-deployment-target", min_os,
-            "--app-icon", "App Icon & Top Shelf Image",
+            "--launch-image", "LaunchImage",
             "--output-partial-info-plist", str(partial),
             "--output-format", "human-readable-text",
             "--errors", "--warnings",
@@ -624,20 +706,22 @@ def compile_tvos_icons(xcassets, original_car, min_os, force=False):
         if res.returncode != 0 or not (out / "Assets.car").exists():
             raise RuntimeError("actool failed:\n" + res.stdout + res.stderr)
         new_car = out / "Assets.car"
+        new_names = _assetutil_names(new_car)
+        print("Icons: compiled renditions:", ", ".join(sorted(new_names)))
         if original_car is not None:
             orig_path = Path(tmpdir) / "orig.car"
             orig_path.write_bytes(original_car)
-            missing = sorted(_assetutil_names(orig_path) - _assetutil_names(new_car))
+            missing = sorted(_assetutil_names(orig_path) - new_names)
             if missing and not force:
                 raise RuntimeError(
                     "original Assets.car contains renditions the new icon catalog lacks; replacing it could break "
                     "the app: " + ", ".join(missing[:30]) + ("..." if len(missing) > 30 else "")
-                    + "\nRe-run with --force-icons to replace anyway, or extract those assets into "
+                    + "\nRe-run with --force-icons to replace anyway, or add those assets to "
                     "platforms/tvos/Assets.xcassets first."
                 )
             if missing:
                 print("WARNING: dropping renditions from original Assets.car:", ", ".join(missing))
-        return new_car.read_bytes(), plistlib.loads(partial.read_bytes()) if partial.exists() else {}
+        return new_car.read_bytes(), {}
 
 
 def patch_ipa(in_path, out_path, enable_printf_logs=False, display_name=APP_DISPLAY_NAME,
@@ -653,6 +737,12 @@ def patch_ipa(in_path, out_path, enable_printf_logs=False, display_name=APP_DISP
         app_dir = find_app_dir(names)
 
         original = zin.read(bin_info.filename)
+        if is_mutube_patched(original):
+            # Input is an already-patched MuTube / YouTube + build: restore the
+            # pristine instructions and padding, then patch as usual.
+            clean = bytearray(original)
+            print("NOTE: input is already MuTube-patched; restored:", ", ".join(unpatch_mutube(clean)))
+            original = bytes(clean)
         binary = bytearray(original)
         try:
             meta = patch_binary(binary, enable_printf_logs=enable_printf_logs,
@@ -676,7 +766,7 @@ def patch_ipa(in_path, out_path, enable_printf_logs=False, display_name=APP_DISP
             min_os = plistlib.loads(zin.read(plist_name)).get("MinimumOSVersion", "15.0")
             car, extra = compile_tvos_icons(Path(tvos_icons), orig_car, min_os, force=force_icons)
             replaced[car_name] = car
-            print("Icons: replaced", car_name, "and merged", ", ".join(sorted(extra)) or "no plist keys")
+            print("Icons: replaced", car_name)
         if display_name:
             new_plist, old_name, _ = rebrand_plist(zin.read(plist_name), display_name, extra)
             replaced[plist_name] = new_plist

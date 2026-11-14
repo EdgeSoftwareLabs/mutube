@@ -108,51 +108,55 @@ def contents(path, obj):
 
 
 def tvos_catalog(out):
-    """tvOS asset catalog: 'App Icon & Top Shelf Image' brand assets.
+    """tvOS asset catalog that is a drop-in replacement for the Assets.car in
+    the YouTube 4.54.01 tvOS IPA.
 
-    Layered icon = Back (white) + Front (logo, transparent), as tvOS requires
-    2-5 layers. Sizes per Apple HIG: 400x240 @1x/@2x home icon, 1280x768 App
-    Store icon, 1920x720 / 2320x720 top shelf (@1x/@2x).
+    That Assets.car (xcrun assetutil --info) holds only: AppIconSmall
+    (2-layer image stack, 400x240 @1x/@2x), TopShelfImage (1920x720 @1x),
+    Top Shelf Image Wide (2320x720 @1x/@2x) and LaunchImage (1920x1080 @1x,
+    3840x2160 @2x), referenced by name from Info.plist. We emit exactly those
+    names so Info.plist needs no change.
     """
     if out.exists():
         shutil.rmtree(out)
     contents(out, {"info": INFO})
-    brand = out / "App Icon & Top Shelf Image.brandassets"
-    contents(brand, {"assets": [
-        {"filename": "App Icon - App Store.imagestack", "idiom": "tv", "role": "primary-app-icon", "size": "1280x768"},
-        {"filename": "App Icon.imagestack", "idiom": "tv", "role": "primary-app-icon", "size": "400x240"},
-        {"filename": "Top Shelf Image Wide.imageset", "idiom": "tv", "role": "top-shelf-image-wide", "size": "2320x720"},
-        {"filename": "Top Shelf Image.imageset", "idiom": "tv", "role": "top-shelf-image", "size": "1920x720"},
-    ], "info": INFO})
 
-    def stack(name, sizes):
-        st = brand / f"{name}.imagestack"
-        contents(st, {"info": INFO, "layers": [{"filename": "Front.imagestacklayer"}, {"filename": "Back.imagestacklayer"}]})
-        for layer, bg in (("Front", None), ("Back", "#FFFFFF")):
-            ls = st / f"{layer}.imagestacklayer"
-            contents(ls, {"info": INFO})
-            iset = ls / "Content.imageset"
-            imgs = []
-            for scale, (w, h) in sizes:
-                fn = f"{layer.lower()}_{w}x{h}.png"
-                if layer == "Front":
-                    png(svg_wide(w, h, None, logo_h_frac=0.80), w, h, iset / fn)
-                else:
-                    png(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="{bg}"/></svg>', w, h, iset / fn, flatten="#FFFFFF")
-                imgs.append({"filename": fn, "idiom": "tv", "scale": scale})
-            contents(iset, {"images": imgs, "info": INFO})
-
-    stack("App Icon", [("1x", (400, 240)), ("2x", (800, 480))])
-    stack("App Icon - App Store", [("1x", (1280, 768))])
-
-    for name, (w, h) in (("Top Shelf Image", (1920, 720)), ("Top Shelf Image Wide", (2320, 720))):
-        iset = brand / f"{name}.imageset"
+    st = out / "AppIconSmall.imagestack"
+    contents(st, {"info": INFO, "layers": [{"filename": "Front.imagestacklayer"}, {"filename": "Back.imagestacklayer"}]})
+    for layer in ("Front", "Back"):
+        ls = st / f"{layer}.imagestacklayer"
+        contents(ls, {"info": INFO})
+        iset = ls / "Content.imageset"
         imgs = []
-        for scale, mult in (("1x", 1), ("2x", 2)):
-            fn = f"topshelf_{w * mult}x{h * mult}.png"
-            png(svg_wide(w, h, DARK, logo_h_frac=0.42, wordmark=True, gradient=True), w * mult, h * mult, iset / fn, flatten=DARK)
+        for scale, (w, h) in (("1x", (400, 240)), ("2x", (800, 480))):
+            fn = f"{layer.lower()}_{w}x{h}.png"
+            if layer == "Front":
+                png(svg_wide(w, h, None, logo_h_frac=0.80), w, h, iset / fn)
+            else:
+                png(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="#FFFFFF"/></svg>', w, h, iset / fn, flatten="#FFFFFF")
             imgs.append({"filename": fn, "idiom": "tv", "scale": scale})
         contents(iset, {"images": imgs, "info": INFO})
+
+    for name, (w, h), scales in (("TopShelfImage", (1920, 720), (1,)), ("Top Shelf Image Wide", (2320, 720), (1, 2))):
+        iset = out / f"{name}.imageset"
+        imgs = []
+        for mult in scales:
+            fn = f"topshelf_{w * mult}x{h * mult}.png"
+            png(svg_wide(w, h, DARK, logo_h_frac=0.42, wordmark=True, gradient=True), w * mult, h * mult, iset / fn, flatten=DARK)
+            imgs.append({"filename": fn, "idiom": "tv", "scale": f"{mult}x"})
+        contents(iset, {"images": imgs, "info": INFO})
+
+    li = out / "LaunchImage.launchimage"
+    imgs = []
+    for mult in (1, 2):
+        fn = f"launch_{1920 * mult}x{1080 * mult}.png"
+        png(svg_wide(1920, 1080, DARK, logo_h_frac=0.30), 1920 * mult, 1080 * mult, li / fn, flatten=DARK)
+    for minver, mults in (("11.0", (1, 2)), ("9.0", (1,))):
+        for mult in mults:
+            imgs.append({"orientation": "landscape", "idiom": "tv", "extent": "full-screen",
+                         "minimum-system-version": minver, "filename": f"launch_{1920 * mult}x{1080 * mult}.png",
+                         "scale": f"{mult}x"})
+    contents(li, {"images": imgs, "info": INFO})
 
 
 def ios_catalog(out, master):

@@ -35,3 +35,14 @@ tizen install -n <launcher>.wgt -s <tv-ip>:26101 -- <dir>
 Open **YouTube +** (not "YouTube + Player") after a restart. Icons: `platforms/tizen/icon.png`
 (play button centred). The user script is still TizenTube's from jsDelivr, as in the stock build.
 GPL-3.0 (TizenTube by Reis Can).
+
+**Certificate level.** On the Tizen 10 Frame (QN65LS03HEDXZA, 2026) no web service runs when
+the package is signed with a *Public* distributor certificate: `launchAppControl` reports
+success but the service process exits at once (even a 10-line test service never ran). On the
+Tizen 6 Frame (QN43LS03AAFXZA) Public works. TizenTube's guide also requires Partner signing for
+the Cobalt build. Sign the launcher (and the player) with a **Partner** distributor certificate
+that lists the TV's DUID for Tizen 7+ TVs.
+
+**Diagnostics.** The launcher's service serves its start-up log at `http://<tv>:8102/` (start-up
+steps, cobalt setup, proxy listen, CONNECT host names, uncaught errors). Setting `REPORT_URL` in
+`launcher/index.html` to a LAN listener makes the launcher page POST its own diagnostics.

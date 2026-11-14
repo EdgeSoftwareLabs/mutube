@@ -112,19 +112,20 @@ Details: [Tizen](platforms/tizen/README.md), [webOS](platforms/webos/README.md),
 
 ## Icon
 
-Original artwork in YouTube's app-icon style (red rounded play button, white
-triangle, red "+" badge) on an iridescent pastel gradient with a dark vignette,
-and a white "YouTube +" wordmark in Google Sans Bold (`icons/fonts`, SIL OFL).
+Original artwork in YouTube's app-icon style (rounded play button, white
+triangle, "+" badge with a white ring), with the button and badge filled with an
+iridescent pastel gradient on solid black, and a white "YouTube +" wordmark in
+Google Sans Bold (`icons/fonts`, SIL OFL).
 `python3 icons/generate_icons.py` (needs `cairosvg`, `Pillow`, `numpy`)
 regenerates every platform size:
 
-- Apple TV: two-layer parallax icon (logo and wordmark over the gradient), Top
-  Shelf 1920x720 and 2320x720 (@1x/@2x) with logo and wordmark centred as a
-  group, and the launch image. Previews: `icons/png/youtube-plus-tvos-1280x768.png`,
-  `icons/png/youtube-plus-topshelf-1920x720.png`.
-- iOS, Tizen, webOS, web: square icon (gradient + logo); the 16:9 Tizen tile and
-  webOS splash use the Top Shelf layout. `icons/youtube-plus.svg` is a vector
-  approximation, `icons/youtube-plus-logo.svg` the bare logo.
+- Apple TV: two-layer parallax icon (gradient logo and wordmark in front, solid
+  black behind), Top Shelf 1920x720 and 2320x720 (@1x/@2x) on black with logo
+  and wordmark centred as a group, and the launch image. Previews:
+  `icons/png/youtube-plus-tvos-1280x768.png`, `icons/png/youtube-plus-topshelf-1920x720.png`.
+- iOS, Tizen, webOS, web: square icon (gradient logo on black); the 16:9 Tizen
+  tile and webOS splash use the Top Shelf layout. `icons/youtube-plus.svg` is a
+  vector approximation, `icons/youtube-plus-logo.svg` the bare logo.
 
 YouTube is a trademark of Google LLC. This is an unofficial personal project,
 not affiliated with or endorsed by Google.

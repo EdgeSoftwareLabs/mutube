@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the two unsigned widget trees for the Tizen launcher fix.
 
-  build/tizen-launcher/player    xvvl3S1TT1  "YT+ Player" (grey)  (TizenTube Cobalt 2.1.1,
+  build/tizen-launcher/player    xvvl3S1TT1  "YT+ Helper" (grey)  (TizenTube Cobalt 2.1.1,
                                  service removed, renamed, plain grey icon)
   build/tizen-launcher/launcher  YTPlusLnch  "YouTube +"         (launcher page + the only
                                  proxy service, patched by patch_service.py, serving the
@@ -27,8 +27,8 @@ ROOT = HERE.parents[2]
 OUT = ROOT / "build" / "tizen-launcher"
 URL = "https://github.com/reisxd/TizenTube/releases/download/v2.1.1/TizenTubeCobalt.wgt"
 SHA256 = "d5ebcf5b61e907912d5200b033f0d366717cb952c9f543a6332d36bef771b3b5"
-PLAYER_VERSION = "2.1.4"      # upstream 2.1.1 + our changes; must not go below the installed 2.1.1
-PLAYER_NAME = "YT+ Player"    # deliberately plain: open "YouTube +" instead
+PLAYER_VERSION = "2.1.5"      # upstream 2.1.1 + our changes; must not go below the installed 2.1.1
+PLAYER_NAME = "YT+ Helper"    # deliberately plain: open "YouTube +" instead
 ICON = ROOT / "platforms" / "tizen" / "icon.png"     # centred E2 icon, 512x512
 # The user script the proxy serves: TizenTube pinned + our youtube-plus.js (the stock 2.1.1
 # service loads TizenTube's unpinned latest from jsDelivr instead).

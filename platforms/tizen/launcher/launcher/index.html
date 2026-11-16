@@ -41,8 +41,8 @@ function openPlayer() {
   try {
     tizen.application.launch(PLAYER, function () {
       setTimeout(function () { tizen.application.getCurrentApplication().exit(); }, 500);
-    }, function (e) { status("Could not open YouTube + Player (" + e.message + "). Press OK to retry."); });
-  } catch (e) { status("Could not open YouTube + Player (" + e.message + "). Press OK to retry."); }
+    }, function (e) { status("Could not open YT+ Player (" + e.message + "). Press OK to retry."); });
+  } catch (e) { status("Could not open YT+ Player (" + e.message + "). Press OK to retry."); }
 }
 
 function waitForProxy(t0) {

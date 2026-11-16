@@ -17,7 +17,7 @@ certificates before listening (~3-4 s on a TV), racing the player.
 | Package | App id | Name | Role |
 |---|---|---|---|
 | `YTPlusLnch` | `YTPlusLnch.YouTubePlus` | YouTube + | The tile to open. Starts its own `YTPlusLnch.ProxyService` (the only proxy), waits for `http://127.0.0.2:8101/__ytplus/health`, opens the player. |
-| `xvvl3S1TT1` | `xvvl3S1TT1.TizenTubeStandalone` | YouTube + Player | TizenTube Cobalt 2.1.1 with its service removed; opens Samsung's player with proxy `127.0.0.2:8101`. Same package id as TizenTube, so it updates the installed app in place. |
+| `xvvl3S1TT1` | `xvvl3S1TT1.TizenTubeStandalone` | YT+ Player (plain grey icon) | TizenTube Cobalt 2.1.1 with its service removed; opens Samsung's player with proxy `127.0.0.2:8101`. Same package id as TizenTube, so it updates the installed app in place. |
 
 `patch_service.py` changes the proxy in the compiled service (`service/dist/index.js`): listen on
 8101 immediately; load the CA lazily; make the youtube.com certificates on first use and cache them
@@ -32,8 +32,19 @@ tizen install -n <player>.wgt   -s <tv-ip>:26101 -- <dir>
 tizen install -n <launcher>.wgt -s <tv-ip>:26101 -- <dir>
 ```
 
-Open **YouTube +** (not "YouTube + Player") after a restart. Icons: `platforms/tizen/icon.png`
-(play button centred). The user script is still TizenTube's from jsDelivr, as in the stock build.
+Open **YouTube +** (not the grey "YT+ Player") after a restart. Icons: `platforms/tizen/icon.png`
+(play button centred) for YouTube +; the player gets a plain grey tile so the two are easy to tell apart.
+
+**User script.** `build.py` downloads TizenTube's `userScript.js` pinned to 1.15.2 (sha256-checked),
+appends `youtube-plus.js` and has `patch_service.py` embed the bundle in the service. The Cobalt
+MITM proxy answers `https://www.youtube.com/__ytplus/userScript.js` itself and the `/tv` page loads
+that instead of TizenTube's unpinned jsDelivr script, so script changes need a rebuild + reinstall.
+`/__ytplus/health` reports the bundle size. Check from the LAN:
+`curl -k -x http://<tv>:8101 https://www.youtube.com/__ytplus/userScript.js | grep "VERSION = '"`.
+
+**One app?** Not possible with a web widget: the player must carry Samsung's `nativeID` metadata
+(so its own page never runs and cannot start the proxy), Tizen web packages hold one UI app,
+and `config.xml` has no way to hide an app from the launcher.
 GPL-3.0 (TizenTube by Reis Can).
 
 **Tizen 9/10 (2025+ TVs).** Two things differ there (found on the 2026 Living Room Frame,

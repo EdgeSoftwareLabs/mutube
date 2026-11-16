@@ -20,14 +20,21 @@ GPL-3.0), rewritten without its diagnostic-log dependency:
      file pull are locked down can still be diagnosed from the LAN
      (curl http://<tv>:8102/). Uncaught errors are logged instead of killing the service.
 
+  6. YouTube +'s user script: the bundle (TizenTube + youtube-plus.js, written by build.py
+     to build/tizen-launcher/ytplus-bundle.js) is embedded in the service and answered at
+     https://www.youtube.com/__ytplus/userScript.js by the Cobalt MITM proxy (same origin,
+     no mixed content); the /tv page loads it instead of TizenTube's jsDelivr script.
+     (Ported from build_platforms.py STANDALONE_PATCHES #2.)
+
 Every replacement must match exactly once, or the build stops.
-usage: patch_service.py <dir containing service/dist/index.js> [label]
+usage: patch_service.py <dir containing service/dist/index.js> [label] [bundle.js]
 """
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
 label = sys.argv[2] if len(sys.argv) > 2 else "YouTube + launcher"
+bundle_path = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 else None
 js_path = root / "service" / "dist" / "index.js"
 js = js_path.read_text(encoding="utf-8")
 
@@ -52,6 +59,7 @@ function __ytpLog(m) {
   } catch (e) {}
 }
 global.__ytpLog = __ytpLog;
+global.__ytpBundle = {bundle};
 try {
   process.on('uncaughtException', function (e) { __ytpLog('UNCAUGHT ' + (e && e.stack || e)); });
   process.on('unhandledRejection', function (e) { __ytpLog('UNHANDLED ' + (e && e.stack || e)); });
@@ -66,7 +74,11 @@ try {
 } catch (e) {}
 __ytpLog('=== service start [""" + "{label}" + r"""] node ' + process.version + ' pid ' + process.pid + ' dir ' + __dirname);
 })();
-""").replace("{label}", label)
+""").replace("{label}", label).replace("{bundle}", "null")
+if bundle_path:
+    import json
+    # ensure_ascii: the literal is pure ASCII, so no U+2028/2029 or encoding surprises.
+    BOOT = BOOT.replace("global.__ytpBundle = null;", "global.__ytpBundle = " + json.dumps(bundle_path.read_text(encoding="utf-8")) + ";")
 if js.startswith("/* YouTube + diagnostics"):
     sys.exit("patch_service: already patched")
 js = BOOT + js
@@ -135,7 +147,7 @@ once("  var proxyServer = http.createServer(function (request, response) {\n"
      "  var proxyServer = http.createServer(function (request, response) {\n"
      "    if (request.url.indexOf('/__ytplus/health') === 0) {\n"
      "      response.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });\n"
-     f"      return response.end('ok {label}');\n"
+     f"      return response.end('ok {label}' + (global.__ytpBundle ? ' bundle ' + global.__ytpBundle.length : ' no-bundle'));\n"
      "    }\n"
      "    var targetUrl = url.parse(request.url);\n")
 
@@ -149,6 +161,19 @@ once("  proxyServer.listen(proxyPort, '0.0.0.0');\n}\nmodule.exports = startServ
      "      try { hostCert('www.youtube.com'); hostCert('youtube.com'); global.__ytpLog('certificates ready'); } catch (e) { global.__ytpLog('cert warm-up failed ' + (e && e.stack || e)); }\n"
      "    }, 0);\n"
      "  });\n}\nmodule.exports = startServer;")
+
+# 6. Serve + inject the bundled user script on the Cobalt MITM path.
+if bundle_path:
+    once("        var isTvPath = request.url === '/tv' || request.url.startsWith('/tv?');\n",
+         "        if (request.url.indexOf('/__ytplus/userScript.js') === 0) {\n"
+         "          var __ytpJs = Buffer.from(global.__ytpBundle, 'utf8');\n"
+         "          response.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8',\n"
+         "            'content-length': __ytpJs.length, 'cache-control': 'no-cache', 'connection': 'close' });\n"
+         "          return response.end(__ytpJs);\n"
+         "        }\n"
+         "        var isTvPath = request.url === '/tv' || request.url.startsWith('/tv?');\n")
+    once("body = body.replace('</body>', `<script src=\"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?ver=${Date.now()}\"></script></body>`);",
+         "body = body.replace('</body>', `<script src=\"/__ytplus/userScript.js?ver=${Date.now()}\"></script></body>`);")
 
 js_path.write_text(js, encoding="utf-8")
 print("patched", js_path)

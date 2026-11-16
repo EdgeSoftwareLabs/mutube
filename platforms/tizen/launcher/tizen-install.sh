@@ -35,7 +35,7 @@ echo "proxy: http://$HOST:8101   profile: $PROFILE"
 for d in player launcher; do
   (cd $W/tizen-launcher/$d && $T package -t wgt -s "$PROFILE" >/dev/null)
 done
-mv "$W/tizen-launcher/player/YouTube + Player.wgt" $O/YouTubePlusPlayer.wgt
+mv $W/tizen-launcher/player/*.wgt $O/YouTubePlusPlayer.wgt
 mv "$W/tizen-launcher/launcher/YouTube +.wgt" $O/YouTubePlusLauncher.wgt
 rm -rf $W
 # Connect (restart the sdb server once if the TV refuses).

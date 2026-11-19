@@ -2,7 +2,7 @@
 """Build the two unsigned widget trees for the Tizen launcher fix.
 
   build/tizen-launcher/player    xvvl3S1TT1  "YT+ Helper" (grey)  (TizenTube Cobalt 2.1.1,
-                                 service removed, renamed, plain grey icon)
+                                 service removed, renamed, greyscale YouTube + icon)
   build/tizen-launcher/launcher  YTPlusLnch  "YouTube +"         (launcher page + the only
                                  proxy service, patched by patch_service.py, serving the
                                  bundled TizenTube 1.15.2 + youtube-plus.js user script)
@@ -27,9 +27,10 @@ ROOT = HERE.parents[2]
 OUT = ROOT / "build" / "tizen-launcher"
 URL = "https://github.com/reisxd/TizenTube/releases/download/v2.1.1/TizenTubeCobalt.wgt"
 SHA256 = "d5ebcf5b61e907912d5200b033f0d366717cb952c9f543a6332d36bef771b3b5"
-PLAYER_VERSION = "2.1.5"      # upstream 2.1.1 + our changes; must not go below the installed 2.1.1
+PLAYER_VERSION = "2.1.6"      # upstream 2.1.1 + our changes; must not go below the installed 2.1.1
 PLAYER_NAME = "YT+ Helper"    # deliberately plain: open "YouTube +" instead
 ICON = ROOT / "platforms" / "tizen" / "icon.png"     # centred E2 icon, 512x512
+HELPER_ICON = ROOT / "platforms" / "tizen" / "icon_helper.png"   # greyscale of ICON (alpha kept), 512x512
 # The user script the proxy serves: TizenTube pinned + our youtube-plus.js (the stock 2.1.1
 # service loads TizenTube's unpinned latest from jsDelivr instead).
 TIZENTUBE_VERSION = "1.15.2"
@@ -37,14 +38,6 @@ TT_URL = f"https://cdn.jsdelivr.net/npm/@foxreis/tizentube@{TIZENTUBE_VERSION}/d
 TT_SHA256 = "7a092351e0e348507ef9c97da8833d5f6717de628517f5299053b3c2073f1d69"
 YTPLUS = ROOT / "youtube-plus.js"
 
-
-def gray_icon(path):
-    """Plain grey tile with a dark play triangle, so the player is not mistaken for YouTube +."""
-    from PIL import Image, ImageDraw
-    im = Image.new("RGB", (512, 512), (128, 128, 128))
-    d = ImageDraw.Draw(im)
-    d.polygon([(200, 156), (200, 356), (370, 256)], fill=(64, 64, 64))
-    im.save(path)
 
 
 def once(s, old, new):
@@ -92,7 +85,7 @@ def main():
                                "     see platforms/tizen/launcher/README.md in github.com/mistermassacre/mutube. -->\n<widget ")
     (pl / "config.xml").write_text(cfg, encoding="utf-8")
     shutil.copy(HERE / "player" / "index.html", pl / "index.html")
-    gray_icon(pl / "icon.png")
+    shutil.copy(HELPER_ICON, pl / "icon.png")
     (pl / "NOTICE").write_text(license_txt, encoding="utf-8")
 
     # ---- launcher: our page + the only (patched) proxy service ---------------------

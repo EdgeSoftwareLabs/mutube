@@ -17,7 +17,7 @@ certificates before listening (~3-4 s on a TV), racing the player.
 | Package | App id | Name | Role |
 |---|---|---|---|
 | `YTPlusLnch` | `YTPlusLnch.YouTubePlus` | YouTube + | The tile to open. Starts its own `YTPlusLnch.ProxyService` (the only proxy), waits for `http://127.0.0.2:8101/__ytplus/health`, opens the player. |
-| `xvvl3S1TT1` | `xvvl3S1TT1.TizenTubeStandalone` | YT+ Helper (plain grey icon) | TizenTube Cobalt 2.1.1 with its service removed; opens Samsung's player with proxy `127.0.0.2:8101`. Same package id as TizenTube, so it updates the installed app in place. |
+| `xvvl3S1TT1` | `xvvl3S1TT1.TizenTubeStandalone` | YT+ Helper (greyscale icon) | TizenTube Cobalt 2.1.1 with its service removed; opens Samsung's player with proxy `127.0.0.2:8101`. Same package id as TizenTube, so it updates the installed app in place. |
 
 `patch_service.py` changes the proxy in the compiled service (`service/dist/index.js`): listen on
 8101 immediately; load the CA lazily; make the youtube.com certificates on first use and cache them
@@ -33,7 +33,7 @@ tizen install -n <launcher>.wgt -s <tv-ip>:26101 -- <dir>
 ```
 
 Open **YouTube +** (not the grey "YT+ Helper") after a restart. Icons: `platforms/tizen/icon.png`
-(play button centred) for YouTube +; the player gets a plain grey tile so the two are easy to tell apart.
+(play button centred) for YouTube +; the helper uses `platforms/tizen/icon_helper.png`, a greyscale copy, so the two are easy to tell apart.
 
 **User script.** `build.py` downloads TizenTube's `userScript.js` pinned to 1.15.2 (sha256-checked),
 appends `youtube-plus.js` and has `patch_service.py` embed the bundle in the service. The Cobalt

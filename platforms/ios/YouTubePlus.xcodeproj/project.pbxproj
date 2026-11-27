@@ -29,9 +29,7 @@
 		B20000000000000000000025 /* popup.html in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000015 /* popup.html */; };
 		B20000000000000000000026 /* popup.js in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000016 /* popup.js */; };
 		B20000000000000000000027 /* open-url.js in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000017 /* open-url.js */; };
-		B20000000000000000000028 /* icon-48.png in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000018 /* icon-48.png */; };
-		B20000000000000000000029 /* icon-96.png in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000001A /* icon-96.png */; };
-		B2000000000000000000002A /* icon-128.png in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000001B /* icon-128.png */; };
+		B2000000000000000000002C /* images in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000052 /* images */; };
 		B2000000000000000000002B /* SafariServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000063 /* SafariServices.framework */; };
 		B20000000000000000000041 /* YouTubePlusSafariExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* YouTubePlusSafariExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
 		B20000000000000000000061 /* YouTubeLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000060 /* YouTubeLink.swift */; };
@@ -66,9 +64,7 @@
 		B20000000000000000000015 /* popup.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = popup.html; sourceTree = "<group>"; };
 		B20000000000000000000016 /* popup.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = popup.js; sourceTree = "<group>"; };
 		B20000000000000000000017 /* open-url.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "open-url.js"; sourceTree = "<group>"; };
-		B20000000000000000000018 /* icon-48.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-48.png"; sourceTree = "<group>"; };
-		B2000000000000000000001A /* icon-96.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-96.png"; sourceTree = "<group>"; };
-		B2000000000000000000001B /* icon-128.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-128.png"; sourceTree = "<group>"; };
+		B20000000000000000000052 /* images */ = {isa = PBXFileReference; lastKnownFileType = folder; path = images; sourceTree = "<group>"; };
 		B2000000000000000000001C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000060 /* YouTubeLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeLink.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -186,16 +182,6 @@
 				B20000000000000000000052 /* images */,
 			);
 			path = Resources;
-			sourceTree = "<group>";
-		};
-		B20000000000000000000052 /* images */ = {
-			isa = PBXGroup;
-			children = (
-				B20000000000000000000018 /* icon-48.png */,
-				B2000000000000000000001A /* icon-96.png */,
-				B2000000000000000000001B /* icon-128.png */,
-			);
-			path = images;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -332,9 +318,7 @@
 				B20000000000000000000025 /* popup.html in Resources */,
 				B20000000000000000000026 /* popup.js in Resources */,
 				B20000000000000000000027 /* open-url.js in Resources */,
-				B20000000000000000000028 /* icon-48.png in Resources */,
-				B20000000000000000000029 /* icon-96.png in Resources */,
-				B2000000000000000000002A /* icon-128.png in Resources */,
+				B2000000000000000000002C /* images in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

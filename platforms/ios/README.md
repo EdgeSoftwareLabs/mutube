@@ -105,4 +105,6 @@ Optional. The app registers `youtubeplus://`. The embedded Safari extension **Op
 4. Tap a YouTube link in Safari. It opens in YouTube +.
 5. To keep a link in Safari, open the extension's button and turn off **Open YouTube links in YouTube +**. Turn the extension off entirely from the same Settings page.
 
+The extension's `images` directory is an Xcode folder reference, so `images/icon-128.png` (and the other icon paths in `manifest.json`) stay in that subdirectory inside `YouTubePlusSafariExtension.appex`. Loose file references would be copied to the root of the extension and Safari would report them missing.
+
 Icons are the catalog in `Assets.xcassets` (from `icons/png/youtube-plus-1024.png`). YouTube is a trademark of Google LLC. This app is not affiliated with or endorsed by Google.

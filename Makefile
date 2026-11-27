@@ -35,6 +35,7 @@ test:
 	node tests/simulate.js
 	node tests/ios-script.js
 	node tests/ios-open-url.js
+	node tests/ios-extension-bundle.js
 
 .PHONY: clean
 clean:

@@ -46,6 +46,13 @@ if [[ ! -d "${APP:-}" ]]; then
   exit 1
 fi
 
+APPEX="$(find "$APP" -type d -name 'YouTubePlusSafariExtension.appex' -print -quit || true)"
+if [[ ! -d "${APPEX:-}" ]]; then
+  echo "YouTubePlusSafariExtension.appex was not embedded in $APP" >&2
+  exit 1
+fi
+node "$ROOT/tests/ios-extension-bundle.js" --appex "$APPEX"
+
 STAGE="$HERE/build/ipa-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/Payload"

@@ -181,12 +181,52 @@ function segments() {
   ];
 }
 
+function countNodes(node) {
+  if (!node || typeof node !== 'object') return 0;
+  var n = 1;
+  var i, k;
+  if (Array.isArray(node)) {
+    for (i = 0; i < node.length; i++) n += countNodes(node[i]);
+    return n;
+  }
+  for (k in node) if (Object.prototype.hasOwnProperty.call(node, k)) n += countNodes(node[k]);
+  return n;
+}
+
+function fatBrowse(n) {
+  var contents = [];
+  var i;
+  for (i = 0; i < n; i++) {
+    contents.push({ richItemRenderer: { content: { videoRenderer: {
+      videoId: 'abcdefghijk',
+      title: { runs: [{ text: 'Video ' + i }] },
+      thumbnail: { thumbnails: [
+        { url: 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg', width: 480, height: 360 },
+        { url: 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg', width: 320, height: 180 }
+      ] },
+      trackingParams: 'x',
+      accessibility: { accessibilityData: { label: 'Video ' + i } },
+      menu: { menuRenderer: { items: [
+        { menuServiceItemRenderer: { text: { simpleText: 'Not interested' } } },
+        { menuServiceItemRenderer: { text: { simpleText: "Don't recommend channel" } } }
+      ] } }
+    } } } });
+  }
+  contents.push({ richItemRenderer: { content: { adSlotRenderer: { adSlotMetadata: { tracking: 'ad' } } } } });
+  var contextKids = [];
+  for (i = 0; i < 80; i++) contextKids.push({ serviceTrackingParams: [{ params: [{ key: 'k', value: 'v' }] }] });
+  return {
+    responseContext: { serviceTrackingParams: contextKids },
+    contents: { singleColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: { content: { richGridRenderer: { contents: contents } } } }] } }
+  };
+}
+
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.0.0'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.0.1'") !== -1, 'script version');
 
-  check(load('youtu.be').YP.version === '1.0.0', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.0.1', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -194,8 +234,8 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.0.0', 'YouTubePlus exported');
-  check(env.win.__timers.length === 1 && env.win.__timers[0].ms === 500, 'poll timer');
+  check(YP && YP.version === '1.0.1', 'YouTubePlus exported');
+  check(env.win.__timers.length === 1 && env.win.__timers[0].ms === 1000, 'poll timer');
 
   reset(YP);
 
@@ -403,6 +443,19 @@ async function main() {
   YP.process(JSON.parse(JSON.stringify(player())));
   reset(YP);
 
+  var fat = fatBrowse(40);
+  var totalNodes = countNodes(fat);
+  var beforeNodes = YP.stats().nodesVisited;
+  var beforeFetches = win.__fetchURLs.length;
+  var cleanedFat = YP.process(fat);
+  var visited = YP.stats().nodesVisited - beforeNodes;
+  check(visited * 3 < totalNodes, 'browse walk skips thumbnail and tracking metadata');
+  check(JSON.stringify(cleanedFat).indexOf('adSlotRenderer') === -1, 'fat feed ads removed');
+  check(JSON.stringify(cleanedFat).indexOf('https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg') !== -1, 'thumbnail urls preserved');
+  check(JSON.stringify(cleanedFat).indexOf('Not interested') !== -1, 'fat feed keeps Not interested');
+  check(JSON.stringify(cleanedFat).indexOf("Don't recommend channel") !== -1, 'fat feed keeps the channel item');
+  check(win.__fetchURLs.length === beforeFetches, 'DeArrow stays quiet when it is off');
+
   var rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
   var blob = JSON.stringify(rules);
   check(Array.isArray(rules) && rules.length >= 6, 'content rules list');
@@ -416,13 +469,16 @@ async function main() {
     check(rule.action && rule.action.type === 'block', 'rule blocks');
     check(rule.trigger && rule.trigger['url-filter'], 'rule has a filter');
     check(rule.trigger['if-domain'].indexOf('*youtube.com') !== -1, 'rule is limited to YouTube');
+    var types = rule.trigger['resource-type'] || [];
+    check(types.indexOf('image') === -1, 'image requests skip the content blocker');
   });
+  check(blob.indexOf('ytimg') === -1, 'rules do not name thumbnail hosts');
 
   check(fs.existsSync(bundledScript), 'bundled script is checked in');
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.0.0', 'bundle info version');
+  check(info.iosScriptVersion === '1.0.1', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -436,6 +492,7 @@ async function main() {
   check(contentSwift.indexOf('Welcome to YouTube +') !== -1, 'welcome toast');
   check(contentSwift.indexOf('TizenTube') === -1, 'main UI does not name TizenTube');
   check(infoPlist.indexOf('UIBackgroundModes') !== -1 && infoPlist.indexOf('audio') !== -1, 'background audio mode');
+  check(infoPlist.indexOf('youtubeplus') !== -1, 'custom URL scheme');
   check(infoPlist.indexOf('Edge Software Labs LLC') !== -1, 'copyright');
   check(xcconfig.indexOf('com.edgesoftwarelabs.youtubeplus') !== -1, 'bundle id');
   check(xcconfig.indexOf('YouTube +') !== -1, 'display name');

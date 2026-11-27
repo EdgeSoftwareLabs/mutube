@@ -11,6 +11,9 @@ struct YouTubePlusApp: App {
                 .environmentObject(settings)
                 .environmentObject(session)
                 .preferredColorScheme(.dark)
+                .onOpenURL { url in
+                    session.open(url)
+                }
         }
     }
 }

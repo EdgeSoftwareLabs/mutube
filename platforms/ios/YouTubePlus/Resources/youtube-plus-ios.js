@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.0.1';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -135,11 +135,63 @@
   var rydPending = {};
   var stats = {
     responses: 0,
+    nodesVisited: 0,
     adsRemoved: 0,
     shortsRemoved: 0,
     titlesReplaced: 0,
     sponsorSkips: 0,
     pauseBlocked: 0
+  };
+
+  // Leaf metadata. Walking these on every Home / Subscriptions / Shorts / You
+  // response blocks the main thread before YouTube can request i.ytimg.com.
+  var SKIP_DESCEND = {
+    thumbnail: 1,
+    thumbnails: 1,
+    richThumbnail: 1,
+    movingThumbnail: 1,
+    channelThumbnail: 1,
+    thumbnailOverlays: 1,
+    accessibility: 1,
+    accessibilityData: 1,
+    trackingParams: 1,
+    loggingDirectives: 1,
+    clickTrackingParams: 1,
+    playbackTracking: 1,
+    captions: 1,
+    storyboards: 1,
+    playerConfig: 1,
+    attestation: 1,
+    responseContext: 1,
+    frameworkUpdates: 1,
+    microformat: 1,
+    annotations: 1,
+    endscreen: 1,
+    cards: 1,
+    videoDetails: 1,
+    streamingData: 1,
+    playabilityStatus: 1,
+    heartbeatParams: 1,
+    playerMicroformatRenderer: 1,
+    menu: 1,
+    menuRenderer: 1,
+    title: 1,
+    headline: 1,
+    description: 1,
+    descriptionSnippet: 1,
+    detailedMetadataSnippets: 1,
+    metadata: 1,
+    ownerText: 1,
+    shortBylineText: 1,
+    longBylineText: 1,
+    publishedTimeText: 1,
+    viewCountText: 1,
+    lengthText: 1,
+    badges: 1,
+    navigationEndpoint: 1,
+    serviceEndpoint: 1,
+    commandMetadata: 1,
+    engagementPanels: 1
   };
 
   function lsGet(key) {
@@ -224,15 +276,22 @@
     return false;
   }
 
+  function isArray(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
+
+  function looksLikeFeedItem(node) {
+    if (!isObj(node) || isArray(node)) return false;
+    if (hasRenderer(node, AD_RENDERERS) || hasRenderer(node, SHORTS_RENDERERS)) return true;
+    return !!(node.videoRenderer || node.richItemRenderer || node.richSectionRenderer ||
+      node.gridVideoRenderer || node.compactVideoRenderer || node.reelItemRenderer ||
+      node.playlistRenderer || node.lockupViewModel);
+  }
+
   function shouldProcess(data) {
     if (!isObj(data)) return false;
-    if (Object.prototype.toString.call(data) === '[object Array]') {
-      return data.length > 0 && isObj(data[0]);
-    }
+    if (isArray(data)) return data.length > 0 && looksLikeFeedItem(data[0]);
     return !!(data.responseContext || data.playerAds || data.adPlacements || data.adSlots ||
-      data.streamingData || data.contents || data.onResponseReceivedCommands ||
-      data.onResponseReceivedActions || data.continuationContents || data.videoDetails ||
-      data.playabilityStatus);
+      data.contents || data.onResponseReceivedCommands || data.onResponseReceivedActions ||
+      data.continuationContents || data.playabilityStatus);
   }
 
   function mark(data) {
@@ -288,18 +347,19 @@
   }
 
   function clean(node, depth) {
-    if (node == null || depth > DEPTH_LIMIT || typeof node !== 'object') return node;
-    var arr = Object.prototype.toString.call(node) === '[object Array]';
-    if (arr) {
-      var out = [];
-      var i;
+    if (node == null || typeof node !== 'object' || depth > DEPTH_LIMIT) return node;
+    stats.nodesVisited++;
+    if (isArray(node)) {
+      var write = 0;
+      var i, item;
       for (i = 0; i < node.length; i++) {
-        var item = node[i];
+        item = node[i];
         if (isAdNode(item)) { stats.adsRemoved++; continue; }
         if (isShortsNode(item)) { stats.shortsRemoved++; continue; }
-        out.push(clean(item, depth + 1));
+        node[write++] = clean(item, depth + 1);
       }
-      return out;
+      node.length = write;
+      return node;
     }
     if (CFG.adBlock) {
       var f;
@@ -310,12 +370,14 @@
         }
       }
     }
-    applyDeArrow(node);
+    if (CFG.deArrow) applyDeArrow(node);
     var keys = [];
     var k;
-    for (k in node) if (hasOwn(node, k) && k !== MARK) keys.push(k);
+    for (k in node) if (hasOwn(node, k) && k !== MARK && !SKIP_DESCEND[k]) keys.push(k);
     var j;
-    for (j = 0; j < keys.length; j++) node[keys[j]] = clean(node[keys[j]], depth + 1);
+    for (j = 0; j < keys.length; j++) {
+      if (node[keys[j]] && typeof node[keys[j]] === 'object') node[keys[j]] = clean(node[keys[j]], depth + 1);
+    }
     return node;
   }
 
@@ -563,12 +625,12 @@
     });
   }
 
-  function tick() {
-    if (!CFG.sponsorBlock || !D || typeof D.querySelector !== 'function') return;
+  function tick(video) {
+    if (!CFG.sponsorBlock) return;
     var id = currentVideoId();
     if (!id) return;
     ensureSegments(id);
-    var video = D.querySelector('video');
+    if (!video && D && typeof D.querySelector === 'function') video = D.querySelector('video');
     if (!video || video.paused || typeof video.currentTime !== 'number') return;
     var decision = sponsorDecision(segmentCache[id] || [], video.currentTime);
     if (!decision) return;
@@ -604,30 +666,12 @@
   }
 
   function hideShortsDOM() {
-    if (!D || typeof D.querySelectorAll !== 'function') return;
+    if (!CFG.hideShorts || !D || typeof D.querySelectorAll !== 'function') return;
     var nodes = D.querySelectorAll(SHORTS_DOM);
     var i;
     for (i = 0; i < nodes.length; i++) {
       if (!nodes[i] || !nodes[i].style) continue;
       nodes[i].style.display = CFG.hideShorts ? 'none' : '';
-    }
-  }
-
-  function configureVideos() {
-    if (!D || typeof D.querySelectorAll !== 'function') return;
-    var videos = D.querySelectorAll('video');
-    var i, v;
-    for (i = 0; i < videos.length; i++) {
-      v = videos[i];
-      if (!v) continue;
-      try {
-        if (typeof v.setAttribute === 'function') {
-          v.setAttribute('playsinline', '');
-          v.setAttribute('webkit-playsinline', '');
-        }
-        v.playsInline = true;
-        if ('disablePictureInPicture' in v) v.disablePictureInPicture = !CFG.pictureInPicture;
-      } catch (e) { /* ignore */ }
     }
   }
 
@@ -775,31 +819,92 @@
     log('appActive', appActive);
   }
 
+  function configureOne(video) {
+    if (!video || video.__ytplusConfigured) return;
+    video.__ytplusConfigured = true;
+    try {
+      if (typeof video.setAttribute === 'function') {
+        video.setAttribute('playsinline', '');
+        video.setAttribute('webkit-playsinline', '');
+      }
+      video.playsInline = true;
+      if ('disablePictureInPicture' in video) video.disablePictureInPicture = !CFG.pictureInPicture;
+    } catch (e) { /* ignore */ }
+  }
+
+  function maybeSkipAds(video) {
+    var node = video;
+    var hops = 0;
+    var cls;
+    while (node && hops < 6) {
+      cls = node.className;
+      if (typeof cls === 'string' && (cls.indexOf('ad-showing') !== -1 || cls.indexOf('ad-player') !== -1)) {
+        skipPlayerAds(D);
+        return;
+      }
+      node = node.parentNode;
+      hops++;
+    }
+    // Skip buttons sit beside the player, not on the video. Only look when the
+    // clip is ad-length so a Home/Shorts feed is not scanned every tick.
+    if (video.duration && video.duration < 90 && D.querySelector) {
+      var btn = D.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytm-ad-skip-button');
+      if (btn && typeof btn.click === 'function') {
+        try { btn.click(); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
   function injectCSS() {
     if (!D || typeof D.createElement !== 'function') return;
     var parent = D.head || D.documentElement;
     if (!parent || typeof parent.appendChild !== 'function') return;
     var existing = null;
     try { existing = D.getElementById ? D.getElementById('ytplus-style') : null; } catch (e) { existing = null; }
-    if (existing) return;
-    var style = D.createElement('style');
-    style.id = 'ytplus-style';
-    style.textContent = 'html,body{background:#0f0f0f!important;}';
-    try { parent.appendChild(style); } catch (e2) { /* ignore */ }
+    if (!existing) {
+      var style = D.createElement('style');
+      style.id = 'ytplus-style';
+      style.textContent = 'html,body{background:#0f0f0f!important;}';
+      try { parent.appendChild(style); } catch (e2) { /* ignore */ }
+    }
+    var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
+    var i, link;
+    for (i = 0; i < hosts.length; i++) {
+      link = D.createElement('link');
+      if (!link) continue;
+      if (link.setAttribute) {
+        link.setAttribute('rel', 'preconnect');
+        link.setAttribute('href', hosts[i]);
+        link.setAttribute('crossorigin', '');
+      }
+      try { parent.appendChild(link); } catch (e3) { /* ignore */ }
+    }
   }
 
-  function startLoops() {
-    if (W.__ytplusTimer || typeof W.setInterval !== 'function') return;
-    W.__ytplusTimer = W.setInterval(function () {
-      try { tick(); } catch (e) { /* ignore */ }
-      try { skipPlayerAds(); } catch (e2) { /* ignore */ }
-      try { hideShortsDOM(); } catch (e3) { /* ignore */ }
-      try { configureVideos(); } catch (e4) { /* ignore */ }
+  function onTick() {
+    var video = null;
+    if (D && typeof D.querySelector === 'function') {
+      try { video = D.querySelector('video'); } catch (e) { video = null; }
+    }
+    if (video) configureOne(video);
+    try { tick(video); } catch (e2) { /* ignore */ }
+    if (CFG.adBlock && video) {
+      try { maybeSkipAds(video); } catch (e3) { /* ignore */ }
+    }
+    if (CFG.hideShorts) {
+      try { hideShortsDOM(); } catch (e4) { /* ignore */ }
+    }
+    if (CFG.returnYouTubeDislike) {
       try {
         var id = currentVideoId();
         if (id) ensureDislikes(id);
       } catch (e5) { /* ignore */ }
-    }, 500);
+    }
+  }
+
+  function startLoops() {
+    if (W.__ytplusTimer || typeof W.setInterval !== 'function') return;
+    W.__ytplusTimer = W.setInterval(onTick, 1000);
   }
 
   function boot() {
@@ -807,15 +912,14 @@
     installPauseGuard();
     injectCSS();
     startLoops();
-    try { hideShortsDOM(); } catch (e) { /* ignore */ }
-    try { configureVideos(); } catch (e2) { /* ignore */ }
   }
 
   function applySettings(o) {
     applyOverrides(o);
     if (!CFG.returnYouTubeDislike) removeDislikeLabel();
-    try { hideShortsDOM(); } catch (e) { /* ignore */ }
-    try { configureVideos(); } catch (e2) { /* ignore */ }
+    if (CFG.hideShorts) {
+      try { hideShortsDOM(); } catch (e) { /* ignore */ }
+    }
     log('settings', JSON.stringify({
       adBlock: CFG.adBlock,
       sponsorBlock: CFG.sponsorBlock,

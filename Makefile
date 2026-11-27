@@ -34,6 +34,7 @@ icons:
 test:
 	node tests/simulate.js
 	node tests/ios-script.js
+	node tests/ios-open-url.js
 
 .PHONY: clean
 clean:

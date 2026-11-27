@@ -37,6 +37,24 @@ final class WebSession: ObservableObject {
     func requestPictureInPicture() {
         webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.requestPictureInPicture();", completionHandler: nil)
     }
+
+    /// Cold launch: `onOpenURL` often arrives while content rules are still compiling,
+    /// so the first load reads `url`. If the page is already up, load immediately.
+    func open(_ incoming: URL) {
+        guard let target = YouTubeLink.mobileURL(from: incoming) else { return }
+        url = target
+        webView?.load(URLRequest(url: target))
+    }
+}
+
+private enum WebCache {
+    private static var installed = false
+
+    static func install() {
+        if installed { return }
+        installed = true
+        URLCache.shared = URLCache(memoryCapacity: 64 * 1024 * 1024, diskCapacity: 512 * 1024 * 1024)
+    }
 }
 
 struct YouTubeWebView: UIViewRepresentable {
@@ -87,8 +105,10 @@ extension YouTubeWebView {
         }
 
         func makeWebView() -> WKWebView {
+            WebCache.install()
             let config = WKWebViewConfiguration()
             config.websiteDataStore = .default()
+            config.suppressesIncrementalRendering = false
             config.allowsInlineMediaPlayback = true
             config.allowsPictureInPictureMediaPlayback = settings.settings.pictureInPicture
             config.allowsAirPlayForMediaPlayback = true
@@ -98,20 +118,22 @@ extension YouTubeWebView {
             enableElementFullscreen(config)
 
             let controller = config.userContentController
+            // Main frame only. Browse JSON and tab thumbnails live there; subframes
+            // would each install the parser hook and the poll timer.
             let prelude = WKUserScript(
                 source: ScriptLoader.prelude(for: settings.settings),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
+                forMainFrameOnly: true
             )
             let bundle = WKUserScript(
                 source: ScriptLoader.userScript(),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
+                forMainFrameOnly: true
             )
             let boot = WKUserScript(
                 source: "window.YouTubePlus&&window.YouTubePlus.boot();",
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: false
+                forMainFrameOnly: true
             )
             controller.addUserScript(prelude)
             controller.addUserScript(bundle)

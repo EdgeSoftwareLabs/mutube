@@ -21,6 +21,12 @@ TizenTube
 MuTube (mutube)
   The tvOS patcher this project grew from (patcher.py, inject.js).
 
+iOS app (platforms/ios)
+  Original YouTube + code (Swift shell and platforms/ios/js/youtube-plus-ios.js).
+  It does not bundle TizenTube. When the matching setting is on, the injected
+  script calls the public SponsorBlock / DeArrow API (sponsor.ajay.app) and
+  the Return YouTube Dislike API (returnyoutubedislikeapi.com).
+
 Google Sans (icons/fonts/GoogleSans-*.ttf)
   Copyright 2025 The Google Sans Project Authors
   https://github.com/googlefonts/googlesans

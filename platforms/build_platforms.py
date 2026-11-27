@@ -7,6 +7,7 @@
   python3 platforms/build_platforms.py tizen-module        -> platforms/tizen/module/dist/{userScript,service}.js
   python3 platforms/build_platforms.py tizen-standalone --tizentube-src /path/to/TizenTube
                                                            -> build/tizen-standalone/app (widget root, script bundled)
+  python3 platforms/build_platforms.py ios                 -> platforms/ios/YouTubePlus/Resources (script + content rules)
   python3 platforms/build_platforms.py all
 
 TizenTube (GPL-3.0, github.com/reisxd/TizenTube) is downloaded at build time at
@@ -17,6 +18,7 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -213,17 +215,51 @@ def build_tizen_standalone(args):
     print("      tizen package -t wgt -s <cert-profile> -- <clean copy of", app.relative_to(ROOT), ">")
 
 
+def build_ios(_args):
+    """Copy the iOS userscript and content rules into the app bundle sources.
+
+    The Xcode project compiles YouTubePlus/Resources into the IPA. Editing
+    platforms/ios/js and re-running this (or platforms/ios/build.sh, which calls
+    it) refreshes that copy. No CDN.
+    """
+    js_src = PLAT / "ios" / "js" / "youtube-plus-ios.js"
+    rules_src = PLAT / "ios" / "js" / "content-rules.json"
+    dest = PLAT / "ios" / "YouTubePlus" / "Resources"
+    dest.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["node", "--check", str(js_src)], check=True)
+    rules_text = rules_src.read_text(encoding="utf-8")
+    rules = json.loads(rules_text)
+    if not isinstance(rules, list) or not rules:
+        sys.exit("ios content rules must be a non-empty JSON list")
+    js = js_src.read_text(encoding="utf-8")
+    match = re.search(r"var VERSION = '([^']+)'", js)
+    ios_version = match.group(1) if match else "0"
+    shutil.copyfile(js_src, dest / "youtube-plus-ios.js")
+    shutil.copyfile(rules_src, dest / "content-rules.json")
+    info = {
+        "name": "YouTube +",
+        "platform": "ios",
+        "iosScriptVersion": ios_version,
+        "youtubePlusVersion": version(),
+        "script": "youtube-plus-ios.js",
+        "scriptBytes": len(js.encode("utf-8")),
+        "rules": len(rules),
+    }
+    (dest / "bundle-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {dest.relative_to(ROOT)} ({info['scriptBytes']} bytes, {info['rules']} rules, script {ios_version})")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("target", choices=["web", "webos", "tizen-module", "tizen-standalone", "all"])
+    ap.add_argument("target", choices=["web", "webos", "tizen-module", "tizen-standalone", "ios", "all"])
     ap.add_argument("--with-tizentube", action="store_true", help="webOS: also bundle TizenTube (experimental)")
     ap.add_argument("--tizentube-src", help="tizen-standalone: path to a TizenTube checkout")
     args = ap.parse_args()
-    targets = ["web", "webos", "tizen-module"] if args.target == "all" else [args.target]
+    targets = ["ios", "web", "webos", "tizen-module"] if args.target == "all" else [args.target]
     for t in targets:
         print(f"[{t}]")
         {"web": build_web, "webos": build_webos, "tizen-module": build_tizen_module,
-         "tizen-standalone": build_tizen_standalone}[t](args)
+         "tizen-standalone": build_tizen_standalone, "ios": build_ios}[t](args)
 
 
 if __name__ == "__main__":

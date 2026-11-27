@@ -33,6 +33,7 @@ icons:
 .PHONY: test
 test:
 	node tests/simulate.js
+	node tests/ios-script.js
 
 .PHONY: clean
 clean:

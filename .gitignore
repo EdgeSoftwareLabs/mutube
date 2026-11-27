@@ -8,3 +8,5 @@ __pycache__/
 build/
 platforms/tizen/module/dist/
 node_modules/
+xcuserdata/
+*.xcuserstate

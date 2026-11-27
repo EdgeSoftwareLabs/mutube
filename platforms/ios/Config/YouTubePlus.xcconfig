@@ -1,0 +1,19 @@
+// YouTube + iOS build settings.
+// Change the bundle id or team here before signing with Xcode, Sideloadly,
+// or Automatic Sideloader. Command-line xcodebuild flags still override these.
+
+YTPLUS_BUNDLE_ID = com.edgesoftwarelabs.youtubeplus
+YTPLUS_TEAM_ID =
+YTPLUS_DISPLAY_NAME = YouTube +
+YTPLUS_MARKETING_VERSION = 1.0.0
+YTPLUS_BUILD_VERSION = 1
+
+PRODUCT_BUNDLE_IDENTIFIER = $(YTPLUS_BUNDLE_ID)
+DEVELOPMENT_TEAM = $(YTPLUS_TEAM_ID)
+MARKETING_VERSION = $(YTPLUS_MARKETING_VERSION)
+CURRENT_PROJECT_VERSION = $(YTPLUS_BUILD_VERSION)
+CODE_SIGN_STYLE = Automatic
+IPHONEOS_DEPLOYMENT_TARGET = 16.0
+TARGETED_DEVICE_FAMILY = 1,2
+PRODUCT_NAME = YouTubePlus
+SWIFT_VERSION = 5.0

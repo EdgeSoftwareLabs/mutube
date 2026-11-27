@@ -1,0 +1,66 @@
+[
+  {
+    "trigger": {
+      "url-filter": "https?://([a-z0-9-]+\\.)*doubleclick\\.net",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "style-sheet", "script", "font", "raw", "svg-document", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "https?://([a-z0-9-]+\\.)*googlesyndication\\.com",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "style-sheet", "script", "font", "raw", "svg-document", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "https?://([a-z0-9-]+\\.)*googleadservices\\.com",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "style-sheet", "script", "font", "raw", "svg-document", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "https?://([a-z0-9-]+\\.)*adservice\\.google\\.com",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "style-sheet", "script", "font", "raw", "svg-document", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "youtube\\.com/pagead",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "style-sheet", "script", "raw", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "youtube\\.com/ptracking",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "script", "raw", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "youtube\\.com/api/stats/ads",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "image", "script", "raw", "popup"]
+    },
+    "action": { "type": "block" }
+  },
+  {
+    "trigger": {
+      "url-filter": "youtube\\.com/get_midroll",
+      "if-domain": ["*youtube.com", "*youtu.be", "*youtube-nocookie.com"],
+      "resource-type": ["document", "script", "raw", "media", "popup"]
+    },
+    "action": { "type": "block" }
+  }
+]

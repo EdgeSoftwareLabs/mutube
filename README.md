@@ -2,7 +2,9 @@
 
 YouTube + (formerly μTube / MuTube) enhances the YouTube TV app with
 [TizenTube](https://github.com/reisxd/TizenTube)'s userscript (ad removal,
-SponsorBlock, extra player controls) and adds its own feature:
+SponsorBlock, extra player controls) and adds its own feature. On iPhone and
+iPad it is a separate app that wraps m.youtube.com and bundles its own ad
+block, SponsorBlock, background audio, and Picture in Picture.
 
 - **Not interested** and **Don't recommend channel** on every Home video tile.
   Hold Select (Apple TV) / OK (TV remotes) on a tile; the two items are added
@@ -15,7 +17,7 @@ SponsorBlock, extra player controls) and adds its own feature:
 | Samsung Tizen | TizenBrew module, or standalone .wgt | Module ready to build; .wgt scaffold |
 | LG webOS | youtube-webos-style IPK | Scaffold, builds an IPK |
 | Browser | Tampermonkey script for youtube.com/tv | Ready |
-| iPhone / iPad | rebranded sideload build | Plan only ([platforms/ios](platforms/ios/README.md)) |
+| iPhone / iPad (iOS) | SwiftUI + WKWebView app, script bundled in the IPA | Ready to build on a Mac ([platforms/ios](platforms/ios/README.md)) |
 
 ## Settings screen
 
@@ -98,12 +100,32 @@ Sideload `youtube-plus.ipa` with a tool like [Sideloadly](https://sideloadly.io/
 On launch a "Welcome to YouTube +" toast appears in the top right corner;
 long-press a Home tile to see the two new items.
 
-## Tizen, webOS, browser, iOS
+## iPhone (iOS)
+
+`platforms/ios/YouTubePlus.xcodeproj` is a SwiftUI app. It loads
+`https://m.youtube.com` in a WKWebView, injects `youtube-plus-ios.js` at
+document start (bundled, no CDN), and compiles `content-rules.json` into a
+content rule list. Background audio uses `UIBackgroundModes` (`audio`) and
+`AVAudioSession` (`.playback`). Settings, including SponsorBlock categories,
+DeArrow, and Hide Shorts, are a native **YouTube + Settings** sheet stored in
+UserDefaults. See [platforms/ios/README.md](platforms/ios/README.md).
+
+```bash
+python3 platforms/build_platforms.py ios   # copy the script into the Xcode resources
+platforms/ios/build.sh                     # on a Mac: unsigned platforms/ios/build/YouTubePlus-unsigned.ipa
+```
+
+Sideload that IPA with Sideloadly or Automatic Sideloader, or open the Xcode
+project, set `YTPLUS_TEAM_ID` in `platforms/ios/Config/YouTubePlus.xcconfig`,
+and run it on a device. The bundle id is `com.edgesoftwarelabs.youtubeplus`.
+
+## Tizen, webOS, browser
 
 ```bash
 python3 platforms/build_platforms.py web            # platforms/web/youtube-plus.user.js
 python3 platforms/build_platforms.py webos          # build/webos -> ares-package
 python3 platforms/build_platforms.py tizen-module   # TizenBrew module bundle
+python3 platforms/build_platforms.py ios            # iOS script bundle
 ```
 
 Details: [Tizen](platforms/tizen/README.md), [webOS](platforms/webos/README.md),

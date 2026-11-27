@@ -33,7 +33,7 @@
       "all_frames": false
     }
   ],
-  "permissions": ["storage"],
+  "permissions": ["storage", "tabs"],
   "host_permissions": [
     "*://youtube.com/*",
     "*://*.youtube.com/*",

@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.0.1';
+  var VERSION = '1.0.2';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -864,7 +864,7 @@
     if (!existing) {
       var style = D.createElement('style');
       style.id = 'ytplus-style';
-      style.textContent = 'html,body{background:#0f0f0f!important;}';
+      style.textContent = 'html,body{background:#0f0f0f!important;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}';
       try { parent.appendChild(style); } catch (e2) { /* ignore */ }
     }
     var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
@@ -879,6 +879,113 @@
       }
       try { parent.appendChild(link); } catch (e3) { /* ignore */ }
     }
+  }
+
+  var PIVOT_TABS = [
+    { id: 'home', label: 'Home', url: 'https://m.youtube.com/' },
+    { id: 'shorts', label: 'Shorts', url: 'https://m.youtube.com/shorts' },
+    { id: 'subscriptions', label: 'Subscriptions', url: 'https://m.youtube.com/feed/subscriptions' },
+    { id: 'you', label: 'You', url: 'https://m.youtube.com/feed/library' }
+  ];
+
+  function isWatchPage(href, opts) {
+    opts = opts || {};
+    if (opts.landscape || opts.fullscreen) return false;
+    var u;
+    try { u = new URL(String(href || ''), 'https://m.youtube.com'); } catch (e) { return false; }
+    var path = u.pathname || '';
+    if (path !== '/watch' && path.indexOf('/watch/') !== 0) return false;
+    return !!(u.searchParams.get('v') || path.length > '/watch/'.length);
+  }
+
+  function isOpenAppLabel(text) {
+    var t = String(text || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').toLowerCase();
+    return t === 'open app';
+  }
+
+  function landscapeNow() {
+    try {
+      return !!(W.matchMedia && W.matchMedia('(orientation: landscape)').matches);
+    } catch (e) { return false; }
+  }
+
+  function syncWatchBar() {
+    if (!D || !D.documentElement || typeof D.createElement !== 'function') return;
+    var href = '';
+    try { href = W.location && W.location.href; } catch (e) { href = ''; }
+    var show = isWatchPage(href, {
+      landscape: landscapeNow(),
+      fullscreen: !!(D.fullscreenElement || D.webkitFullscreenElement)
+    });
+    var root = D.documentElement;
+    var bar = D.__ytplusPivot;
+    if (!show) {
+      if (bar && bar.parentNode && bar.parentNode.removeChild) bar.parentNode.removeChild(bar);
+      D.__ytplusPivot = null;
+      if (root.classList && root.classList.remove) root.classList.remove('ytplus-watch-bar');
+      return;
+    }
+    if (root.classList && root.classList.add) root.classList.add('ytplus-watch-bar');
+    if (bar) return;
+    bar = D.createElement('nav');
+    bar.id = 'ytplus-pivot';
+    if (bar.setAttribute) bar.setAttribute('aria-label', 'YouTube +');
+    if (bar.style) bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;display:flex;height:52px;margin:0;padding:0;background:#0f0f0f;border-top:1px solid rgba(255,255,255,.12);';
+    var i, tab, btn;
+    for (i = 0; i < PIVOT_TABS.length; i++) {
+      tab = PIVOT_TABS[i];
+      btn = D.createElement('button');
+      btn.type = 'button';
+      btn.textContent = tab.label;
+      if (btn.setAttribute) btn.setAttribute('data-ytplus-tab', tab.id);
+      if (btn.style) btn.style.cssText = 'flex:1;background:transparent;color:#fff;border:0;font:600 11px -apple-system,BlinkMacSystemFont,sans-serif;';
+      btn.onclick = (function (url) {
+        return function () { try { W.location.href = url; } catch (err) { /* ignore */ } };
+      })(tab.url);
+      if (bar.appendChild) bar.appendChild(btn);
+    }
+    var parent = D.body || root;
+    if (parent && parent.appendChild) parent.appendChild(bar);
+    D.__ytplusPivot = bar;
+  }
+
+  function hideOpenApp() {
+    if (!D || typeof D.querySelectorAll !== 'function') return 0;
+    var scopes = D.querySelectorAll('ytm-mobile-topbar-renderer, ytm-header-bar, header');
+    var n = 0;
+    var s, nodes, i, el, label;
+    if (!scopes || !scopes.length) {
+      var one = D.querySelector && D.querySelector('[aria-label="Open App"], [aria-label="Open app"]');
+      if (one && one.style) { one.style.display = 'none'; return 1; }
+      return 0;
+    }
+    for (s = 0; s < scopes.length; s++) {
+      nodes = scopes[s].querySelectorAll ? scopes[s].querySelectorAll('a, button') : [];
+      for (i = 0; i < nodes.length; i++) {
+        el = nodes[i];
+        label = (el.getAttribute && (el.getAttribute('aria-label') || '')) || el.innerText || el.textContent || '';
+        if (!isOpenAppLabel(label) || !el.style) continue;
+        el.style.display = 'none';
+        n++;
+      }
+    }
+    return n;
+  }
+
+  function installWatchChrome() {
+    if (!D || D.__ytplusWatch) return;
+    D.__ytplusWatch = true;
+    try {
+      if (W.matchMedia) {
+        var mq = W.matchMedia('(orientation: landscape)');
+        var onChange = function () { syncWatchBar(); };
+        if (mq.addEventListener) mq.addEventListener('change', onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      }
+    } catch (e) { /* ignore */ }
+    if (D.addEventListener) D.addEventListener('yt-navigate-finish', function () { syncWatchBar(); hideOpenApp(); }, true);
+    syncWatchBar();
+    hideOpenApp();
   }
 
   function onTick() {
@@ -900,6 +1007,8 @@
         if (id) ensureDislikes(id);
       } catch (e5) { /* ignore */ }
     }
+    try { syncWatchBar(); } catch (e6) { /* ignore */ }
+    try { hideOpenApp(); } catch (e7) { /* ignore */ }
   }
 
   function startLoops() {
@@ -911,6 +1020,7 @@
     installVisibilityShim();
     installPauseGuard();
     injectCSS();
+    installWatchChrome();
     startLoops();
   }
 
@@ -948,6 +1058,9 @@
     skipLabel: skipLabel,
     skipPlayerAds: skipPlayerAds,
     requestPictureInPicture: requestPictureInPicture,
+    isWatchPage: isWatchPage,
+    isOpenAppLabel: isOpenAppLabel,
+    pivotTabs: function () { return PIVOT_TABS; },
     stats: function () { return stats; },
     settings: function () { return CFG; }
   };

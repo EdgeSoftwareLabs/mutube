@@ -60,7 +60,9 @@ function load(hostname) {
     YTPLUS_CONFIG: {},
     __timers: [],
     __fetchURLs: [],
-    __fetchBody: '{}'
+    __fetchBody: '{}',
+    URL: URL,
+    URLSearchParams: URLSearchParams
   };
   win.window = win;
   doc.defaultView = win;
@@ -224,9 +226,9 @@ function fatBrowse(n) {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.0.1'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.0.2'") !== -1, 'script version');
 
-  check(load('youtu.be').YP.version === '1.0.1', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.0.2', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -234,7 +236,18 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.0.1', 'YouTubePlus exported');
+  check(YP && YP.version === '1.0.2', 'YouTubePlus exported');
+  check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
+  check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
+  check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
+  check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { fullscreen: true }) === false, 'fullscreen hides the bar');
+  check(YP.isWatchPage('https://m.youtube.com/') === false, 'home uses YouTube\'s own bar');
+  check(YP.isWatchPage('https://m.youtube.com/feed/subscriptions') === false, 'subscriptions uses YouTube\'s own bar');
+  check(YP.isOpenAppLabel('Open App') === true, 'open app label');
+  check(YP.isOpenAppLabel('  Open   App ') === true, 'open app spacing');
+  check(YP.isOpenAppLabel('Subscribe') === false, 'subscribe is not the open app pill');
+  var pivot = YP.pivotTabs();
+  check(pivot.length === 4 && pivot[0].label === 'Home' && pivot[1].label === 'Shorts' && pivot[2].label === 'Subscriptions' && pivot[3].label === 'You', 'bottom tabs');
   check(env.win.__timers.length === 1 && env.win.__timers[0].ms === 1000, 'poll timer');
 
   reset(YP);
@@ -478,7 +491,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.0.1', 'bundle info version');
+  check(info.iosScriptVersion === '1.0.2', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');

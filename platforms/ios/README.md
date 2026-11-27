@@ -97,12 +97,14 @@ Open the project, set the team in the xcconfig (or in Signing & Capabilities), a
 
 ## Open YouTube links from Safari
 
-Optional. The app registers `youtubeplus://`. The embedded Safari extension **Open in YouTube +** sends `youtube.com`, `m.youtube.com`, `www.youtube.com`, and `youtu.be` pages to `youtubeplus://open?url=...`, including on a cold launch. Sign-in and OAuth pages (`accounts.google.com`, `accounts.youtube.com`, `/signin`) are not redirected. If a handoff fails, the extension waits a few seconds before trying again so it does not loop.
+Optional. The app registers `youtubeplus://`. The embedded Safari extension **Open in YouTube +** sends `youtube.com`, `m.youtube.com`, `www.youtube.com`, and `youtu.be` pages to `youtubeplus://open?url=...`, including a watch page opened from Google Search and a cold launch. iOS often ignores a custom-scheme redirect that is not tied to a tap, so the page also shows an **Open in YouTube +** banner and hands off a tap on the player or a video link. The extension popup has **Open Current Page in YouTube +** for a page that is already open. Sign-in and OAuth pages (`accounts.google.com`, `accounts.youtube.com`, `/signin`) are not redirected. An automatic attempt does not repeat for the same URL within a few seconds, so a blocked handoff cannot reload in a loop.
+
+On a watch page in portrait, YouTube + keeps **Home**, **Shorts**, **Subscriptions**, and **You** in a bar at the bottom of the page. That bar hides in landscape and fullscreen. The mobile site's **Open App** pill is hidden.
 
 1. Install YouTube + (the IPA above, or Run from Xcode).
 2. On the iPhone open **Settings → Safari → Extensions**.
 3. Enable **Open in YouTube +** and allow it on youtube.com.
-4. Tap a YouTube link in Safari. It opens in YouTube +.
+4. Tap a YouTube link in Safari, including a result on Google. It opens in YouTube +. If Safari keeps the page, tap **Open in YouTube +** on the banner, or use **Open Current Page in YouTube +** in the extension popup.
 5. To keep a link in Safari, open the extension's button and turn off **Open YouTube links in YouTube +**. Turn the extension off entirely from the same Settings page.
 
 The extension's `images` directory is an Xcode folder reference, so `images/icon-128.png` (and the other icon paths in `manifest.json`) stay in that subdirectory inside `YouTubePlusSafariExtension.appex`. Loose file references would be copied to the root of the extension and Safari would report them missing.

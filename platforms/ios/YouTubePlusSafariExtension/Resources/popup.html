@@ -15,6 +15,16 @@
     main { padding: 14px 16px 16px; }
     h1 { margin: 0 0 10px; font-size: 16px; font-weight: 650; }
     label { display: flex; gap: 8px; align-items: flex-start; }
+    button {
+      width: 100%;
+      margin-top: 12px;
+      background: #fff;
+      color: #0f0f0f;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: 600 14px -apple-system, BlinkMacSystemFont, sans-serif;
+    }
     p { margin: 12px 0 0; color: #aaa; font-size: 12px; line-height: 1.4; }
   </style>
 </head>
@@ -25,8 +35,10 @@
       <input id="enabled" type="checkbox">
       <span>Open YouTube links in YouTube +</span>
     </label>
+    <button id="open" type="button">Open Current Page in YouTube +</button>
     <p>Turn the extension itself on or off in Settings → Safari → Extensions. Sign-in pages stay in Safari.</p>
   </main>
+  <script src="open-url.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

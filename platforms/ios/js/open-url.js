@@ -118,9 +118,15 @@
     opts = opts || {};
     if (opts.enabled === false) return null;
     if (!shouldRedirectSafariPage(href)) return null;
-    var now = typeof opts.now === 'number' ? opts.now : 0;
-    var last = typeof opts.lastAttempt === 'number' ? opts.lastAttempt : 0;
-    if (last && now - last < LOOP_MS) return null;
+    // A tap (banner, play, or the popup button) is allowed to repeat.
+    // Automatic attempts are once per URL so a blocked custom-scheme
+    // navigation cannot reload the page in a loop.
+    if (!opts.userGesture) {
+      var now = typeof opts.now === 'number' ? opts.now : 0;
+      var last = typeof opts.lastAttempt === 'number' ? opts.lastAttempt : 0;
+      var lastURL = opts.lastURL || '';
+      if (last && now - last < LOOP_MS && (!lastURL || lastURL === href)) return null;
+    }
     return safariRedirectURL(href);
   }
 

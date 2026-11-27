@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Open in YouTube +",
+  "description": "Open YouTube links in YouTube +.",
+  "version": "1.0.1",
+  "icons": {
+    "48": "images/icon-48.png",
+    "96": "images/icon-96.png",
+    "128": "images/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Open in YouTube +"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://youtube.com/*",
+        "*://*.youtube.com/*",
+        "*://youtu.be/*",
+        "*://*.youtu.be/*"
+      ],
+      "exclude_matches": [
+        "*://accounts.google.com/*",
+        "*://*.accounts.google.com/*",
+        "*://accounts.youtube.com/*",
+        "*://consent.google.com/*",
+        "*://consent.youtube.com/*",
+        "*://myaccount.google.com/*"
+      ],
+      "js": ["open-url.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://youtube.com/*",
+    "*://*.youtube.com/*",
+    "*://youtu.be/*",
+    "*://*.youtu.be/*"
+  ]
+}

@@ -118,6 +118,8 @@ platforms/ios/build.sh                     # on a Mac: unsigned platforms/ios/bu
 Sideload that IPA with Sideloadly or Automatic Sideloader, or open the Xcode
 project, set `YTPLUS_TEAM_ID` in `platforms/ios/Config/YouTubePlus.xcconfig`,
 and run it on a device. The bundle id is `com.edgesoftwarelabs.youtubeplus`.
+An optional Safari extension in the same IPA opens YouTube links in the app;
+see [platforms/ios/README.md](platforms/ios/README.md).
 
 ## Tizen, webOS, browser
 

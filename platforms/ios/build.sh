@@ -1,6 +1,9 @@
 #!/bin/bash
 # Bundle the YouTube + iOS script and, on macOS, build an unsigned IPA
 # for Sideloadly / Automatic Sideloader / a personal Xcode team.
+# The YouTubePlus scheme embeds YouTubePlusSafariExtension.appex under PlugIns.
+# Both targets take YTPLUS_BUNDLE_ID and YTPLUS_TEAM_ID from Config/YouTubePlus.xcconfig
+# so a re-sign can use one wildcard profile. CODE_SIGNING_ALLOWED=NO leaves them unsigned.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

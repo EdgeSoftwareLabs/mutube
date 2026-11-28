@@ -50,9 +50,9 @@ channel** stay as YouTube sends them.
 
 Ad Block, Picture in Picture, DeArrow, and Hide Shorts rebuild the web view so the new document-start configuration applies. SponsorBlock, Background Play, dislike counts, and debug logging apply immediately.
 
-**YouTube + Settings** is a row inside YouTube's own settings list (avatar or You, then Settings). If that list is not on screen, the same row is added to the account menu instead. It is put back after YouTube redraws the page. A two-finger long-press still opens Settings. There is no separate header button. Settings live in `UserDefaults`.
+**YouTube + Settings** is a row in YouTube's own settings list (avatar or You, then Settings), cloned from a category row so it keeps that row's padding, type, and chevron. It sits with General and History & privacy, above the "YouTube, a Google company" footer. Tapping it opens the native sheet. If that list is not on screen, the same row is added to the account menu instead, and it is put back after YouTube redraws the page. A two-finger long-press still opens Settings. There is no separate header button. The sheet's switches use YouTube's own on and off colors. Settings live in `UserDefaults`.
 
-Search history removals are stored in the web view. A suggestion you remove stays gone when you leave and reopen search, and the app also sends YouTube's feedback delete. **Remove All** on the search screen asks first, then blocklists the current history and sends those deletes. The search screen uses the same dark background (`#0F0F0F`) and light text as the rest of the app.
+Search history removals are stored in the web view. A suggestion you remove stays gone when you leave and reopen search, and the app also sends YouTube's feedback delete. The search screen uses the same dark background (`#0F0F0F`) and light text as the rest of the app.
 
 The in-app UI does not say TizenTube and has no social or support links. Credit for the TV userscript this project grew out of stays in the repo [NOTICE](../../NOTICE) and the root README.
 

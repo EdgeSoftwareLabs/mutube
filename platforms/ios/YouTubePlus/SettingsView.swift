@@ -72,6 +72,7 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.surface)
+            .toggleStyle(YouTubeToggleStyle())
             .navigationTitle("YouTube + Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -81,6 +82,55 @@ struct SettingsView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .tint(.white)
+    }
+}
+
+/// Matches the switches on m.youtube.com Settings (History & privacy):
+/// off is a #3f3f3f track with a light gray knob, on is an #f1f1f1 track
+/// with an #0f0f0f knob. The system toggle's white tint draws both states
+/// as the same solid pill.
+struct YouTubeToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            configuration.label
+                .foregroundColor(Color(red: 0.945, green: 0.945, blue: 0.945))
+            Spacer(minLength: 12)
+            YouTubeSwitch(isOn: configuration.isOn)
+        }
+        .contentShape(Rectangle())
+        .opacity(isEnabled ? 1 : 0.45)
+        .onTapGesture {
+            guard isEnabled else { return }
+            withAnimation(.easeInOut(duration: 0.18)) {
+                configuration.isOn.toggle()
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
+    }
+}
+
+private struct YouTubeSwitch: View {
+    var isOn: Bool
+
+    var body: some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            Capsule()
+                .fill(isOn
+                      ? Color(red: 0.945, green: 0.945, blue: 0.945) // #f1f1f1
+                      : Color(red: 0.247, green: 0.247, blue: 0.247)) // #3f3f3f
+                .frame(width: 36, height: 14)
+            Circle()
+                .fill(isOn
+                      ? Color(red: 0.059, green: 0.059, blue: 0.059) // #0f0f0f
+                      : Color(white: 0.78))
+                .frame(width: 20, height: 20)
+                .shadow(color: .black.opacity(0.35), radius: 0.5, y: 1)
+        }
+        .frame(width: 40, height: 22)
+        .animation(.easeInOut(duration: 0.18), value: isOn)
     }
 }

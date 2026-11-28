@@ -262,20 +262,67 @@ function headerNode() {
       if (sel === '#ytplus-header-actions' && this.id === 'ytplus-header-actions') return this;
       return null;
     },
-    addEventListener: function () {}
+    addEventListener: function () {},
+    removeAttribute: function (k) {
+      delete this.attrs[k];
+      if (k === 'id') this.id = '';
+      if (k === 'class') this.className = '';
+    },
+    cloneNode: function (deep) {
+      var copy = headerNode();
+      copy.textContent = this.textContent;
+      copy.className = this.className;
+      var k;
+      for (k in this.attrs) {
+        if (Object.prototype.hasOwnProperty.call(this.attrs, k)) copy.setAttribute(k, this.attrs[k]);
+      }
+      if (deep) {
+        var i;
+        for (i = 0; i < this.children.length; i++) {
+          copy.appendChild(this.children[i].cloneNode ? this.children[i].cloneNode(true) : this.children[i]);
+        }
+      }
+      return copy;
+    }
   };
   return el;
 }
 
 function labeledRow(text) {
   var el = headerNode();
-  el.textContent = text;
+  el.className = 'compact-link';
+  el.setAttribute('class', 'compact-link');
+  var label = headerNode();
+  label.className = 'compact-link-text';
+  label.setAttribute('class', 'compact-link-text');
+  label.textContent = text;
+  var chevron = headerNode();
+  chevron.className = 'chevron-right';
+  chevron.setAttribute('class', 'chevron-right');
+  el.appendChild(label);
+  el.appendChild(chevron);
   return el;
+}
+
+function entryText(row) {
+  var parts = [];
+  var i;
+  if (row.children) {
+    for (i = 0; i < row.children.length; i++) {
+      if (row.children[i].textContent) parts.push(row.children[i].textContent);
+    }
+  }
+  if (parts.length) return parts.join(' ');
+  return row.textContent || '';
 }
 
 function settingsMenus() {
   var page = headerNode();
-  ['General', 'Account', 'Privacy'].forEach(function (name) { page.appendChild(labeledRow(name)); });
+  ['General', 'History & privacy', 'Privacy'].forEach(function (name) { page.appendChild(labeledRow(name)); });
+  var footer = headerNode();
+  footer.className = 'footer';
+  footer.textContent = 'YouTube, a Google company';
+  page.appendChild(footer);
   var account = headerNode();
   ['Settings', 'Help', 'Sign out'].forEach(function (name) { account.appendChild(labeledRow(name)); });
   var root = headerNode();
@@ -338,11 +385,13 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.0'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.1'") !== -1, 'script version');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
+  check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
+  check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.0', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.1', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -350,7 +399,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.0', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.1', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -366,20 +415,27 @@ async function main() {
   win.__messages = [];
   win.webkit = { messageHandlers: { ytplus: { postMessage: function (m) { win.__messages.push(m); } } } };
   check(YP.mountSettingsEntry(menus.doc) === true, 'settings entry mounts');
-  check(menus.page.children[menus.page.children.length - 1].textContent === 'YouTube +', 'entry is on the settings page');
-  check(menus.account.children.every(function (row) { return row.textContent !== 'YouTube +'; }), 'account menu is left alone when the settings page is open');
-  menus.page.children[menus.page.children.length - 1].onclick();
+  var pageLabels = menus.page.children.map(entryText);
+  check(pageLabels[pageLabels.length - 1].indexOf('Google company') !== -1, 'footer stays last');
+  check(pageLabels[pageLabels.length - 2] === 'YouTube +', 'entry sits with the category rows, above the footer');
+  var entry = menus.page.children[pageLabels.length - 2];
+  check(entry.getAttribute('class') === 'compact-link', 'entry clones the category row class');
+  check(entry.children.some(function (child) { return child.className === 'chevron-right'; }), 'entry keeps the chevron');
+  check(menus.account.children.every(function (row) { return entryText(row) !== 'YouTube +'; }), 'account menu is left alone when the settings page is open');
+  entry.onclick();
   check(win.__messages.some(function (m) { return m.type === 'settings'; }), 'settings entry opens the native sheet');
   YP.mountSettingsEntry(menus.doc);
-  check(menus.page.children.filter(function (row) { return row.textContent === 'YouTube +'; }).length === 1, 'settings entry is not duplicated');
-  menus.page.children.pop();
+  check(menus.page.children.filter(function (row) { return row.getAttribute('data-ytplus-settings') === '1'; }).length === 1, 'settings entry is not duplicated');
+  menus.page.children = menus.page.children.filter(function (row) { return row.getAttribute('data-ytplus-settings') !== '1'; });
   menus.page.children[0].textContent = 'General\nApp language';
   check(YP.mountSettingsEntry(menus.doc) === true, 'settings entry comes back after a redraw');
-  check(menus.page.children[menus.page.children.length - 1].textContent === 'YouTube +', 'redraw puts the entry back');
+  pageLabels = menus.page.children.map(entryText);
+  check(pageLabels[pageLabels.length - 2] === 'YouTube +', 'redraw puts the entry back above the footer');
   var accountOnly = settingsMenus();
   accountOnly.page.children = [];
   check(YP.mountSettingsEntry(accountOnly.doc) === true, 'account menu is the fallback');
-  check(accountOnly.account.children[accountOnly.account.children.length - 1].textContent === 'YouTube +', 'fallback entry label');
+  check(entryText(accountOnly.account.children[accountOnly.account.children.length - 1]) === 'YouTube +', 'fallback entry label');
+  check(accountOnly.account.children[accountOnly.account.children.length - 1].children.some(function (child) { return child.className === 'chevron-right'; }), 'fallback entry has a chevron');
   reset(YP);
   var contentView = fs.readFileSync(path.join(root, 'platforms', 'ios', 'YouTubePlus', 'ContentView.swift'), 'utf8');
   var webViewSwift = fs.readFileSync(path.join(root, 'platforms', 'ios', 'YouTubePlus', 'YouTubeWebView.swift'), 'utf8');
@@ -664,19 +720,7 @@ async function main() {
   check(search.row.style.display === 'none', 'the removed row is hidden');
   check(YP.blockedSearches().indexOf('cats') !== -1, 'the row is on the blocklist');
   check(win.__fetchURLs.slice(fetchesBefore).some(function (u) { return u.indexOf('/youtubei/v1/feedback') !== -1; }), 'Remove also calls the feedback endpoint');
-  var blockedBefore = YP.blockedSearches().length;
-  win.confirm = function () { return false; };
-  check(YP.requestClearSearchHistory(search.doc) === false, 'Remove All waits for confirmation');
-  check(YP.blockedSearches().length === blockedBefore, 'cancelling Remove All changes nothing');
-  win.confirm = function (msg) { search.asked = msg; return true; };
-  check(YP.requestClearSearchHistory(search.doc) === true, 'confirmed Remove All clears history');
-  check(search.asked.indexOf('Remove all search history') === 0, 'confirmation explains the action');
-  check(YP.blockedSearches().indexOf('keep me') !== -1, 'Remove All blocklists suggestions from the last response');
-  check(YP.blockedSearches().indexOf('dogs') !== -1, 'Remove All blocklists the other visible row');
-  check(YP.mountClearSearch(search.doc) === true, 'Remove All button is on the search list');
-  check(search.list.children[0].id === 'ytplus-clear-history', 'Remove All is the first row');
-  check(search.list.children[0].textContent === 'Remove All', 'Remove All label');
-  check(search.list.children[0].style.backgroundColor === '#0f0f0f', 'Remove All uses the dark background');
+  check(typeof YP.mountClearSearch !== 'function' && typeof YP.requestClearSearchHistory !== 'function', 'clear-all controls are not exported');
   YP.paintSearch(search.doc);
   check(search.list.style.backgroundColor === '#0f0f0f', 'suggestion list background');
   check(search.list.style.color === '#f1f1f1', 'suggestion list text');
@@ -745,7 +789,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.0', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.1', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -755,6 +799,12 @@ async function main() {
   var xcconfig = fs.readFileSync(path.join(root, 'platforms', 'ios', 'Config', 'YouTubePlus.xcconfig'), 'utf8');
   check(settingsSwift.indexOf('DeArrow replaces clickbait titles and thumbnails with community-submitted, more accurate ones.') !== -1, 'dearrow explanation');
   check(settingsSwift.indexOf('YouTube + Settings') !== -1, 'settings title');
+  check(settingsSwift.indexOf('YouTubeToggleStyle') !== -1, 'custom switch style');
+  check(settingsSwift.indexOf('.tint(.white)') === -1, 'switches are not tinted white');
+  check(settingsSwift.indexOf('#3f3f3f') !== -1, 'off track');
+  check(settingsSwift.indexOf('#f1f1f1') !== -1, 'on track');
+  check(settingsSwift.indexOf('#0f0f0f') !== -1, 'on knob');
+  check(settingsSwift.indexOf('.toggleStyle(YouTubeToggleStyle())') !== -1, 'style applies to every toggle');
   check(settingsSwift.indexOf('TizenTube') === -1, 'settings do not name TizenTube');
   check(contentSwift.indexOf('Welcome to YouTube +') !== -1, 'welcome toast');
   check(contentSwift.indexOf('TizenTube') === -1, 'main UI does not name TizenTube');

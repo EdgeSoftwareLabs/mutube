@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -934,7 +934,7 @@
     if (!existing) {
       var style = D.createElement('style');
       style.id = 'ytplus-style';
-      style.textContent = 'html{color-scheme:dark;}html,body{background:#0f0f0f!important;color:#f1f1f1;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}ytm-search,ytm-searchbox,.searchbox,.searchbox-input,ytm-search-suggestions,.suggestion-list,[role="listbox"],input[type="search"]{background:#0f0f0f!important;color:#f1f1f1!important;caret-color:#f1f1f1;}ytm-search-suggestion,[role="option"]{background:#0f0f0f!important;color:#f1f1f1!important;}#ytplus-clear-history{display:block;width:100%;margin:0;padding:14px 16px;border:0;border-bottom:1px solid rgba(255,255,255,.12);background:#0f0f0f;color:#f1f1f1;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;}';
+      style.textContent = 'html{color-scheme:dark;}html,body{background:#0f0f0f!important;color:#f1f1f1;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}ytm-search,ytm-searchbox,.searchbox,.searchbox-input,ytm-search-suggestions,.suggestion-list,[role="listbox"],input[type="search"]{background:#0f0f0f!important;color:#f1f1f1!important;caret-color:#f1f1f1;}ytm-search-suggestion,[role="option"]{background:#0f0f0f!important;color:#f1f1f1!important;}';
       try { parent.appendChild(style); } catch (e2) { /* ignore */ }
     }
     var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
@@ -1055,7 +1055,8 @@
     'playback and performance': 1, 'connected apps': 1, advanced: 1,
     'billing & payments': 1, 'billing and payments': 1,
     'purchases and memberships': 1, autoplay: 1, downloads: 1,
-    'your data in youtube': 1, 'video quality preferences': 1
+    'your data in youtube': 1, 'video quality preferences': 1,
+    'history & privacy': 1, 'history and privacy': 1
   };
   var ACCOUNT_MENU_LABELS = {
     settings: 1, help: 1, 'send feedback': 1, 'sign out': 1, 'switch account': 1
@@ -1118,8 +1119,136 @@
     return '';
   }
 
-  // One entry, on YouTube's settings list when that page is open, otherwise on
-  // the account menu that contains Settings. Re-inserted after SPA redraws.
+  function isChevron(el) {
+    if (!el) return false;
+    var tag = String(el.tagName || el.nodeName || '');
+    var blob = String(el.className || '');
+    if (el.getAttribute) blob += ' ' + String(el.getAttribute('class') || '') + ' ' + String(el.getAttribute('icon') || '');
+    if (/^svg$/i.test(tag)) return true;
+    return /chevron|arrow-right|yt-icon|iron-icon/i.test(blob + ' ' + tag);
+  }
+
+  function rowHasChevron(el) {
+    var all = [];
+    walkElements(el, all);
+    var i;
+    for (i = 0; i < all.length; i++) if (i > 0 && isChevron(all[i])) return true;
+    return false;
+  }
+
+  function isCategoryRow(el, kind) {
+    if (!el || (el.getAttribute && el.getAttribute('data-ytplus-settings') === '1')) return false;
+    var text = elementText(el);
+    if (kind === 'page') return matchesLabel(text, SETTINGS_PAGE_LABELS);
+    if (kind === 'account') return matchesLabel(text, ACCOUNT_MENU_LABELS);
+    return false;
+  }
+
+  function dropHrefs(el) {
+    if (!el) return;
+    if (el.removeAttribute && el.getAttribute && el.getAttribute('href') != null) el.removeAttribute('href');
+    var kids = elementChildren(el);
+    var i;
+    for (i = 0; i < kids.length; i++) dropHrefs(kids[i]);
+  }
+
+  function stripIds(el) {
+    if (!el) return;
+    if (el.removeAttribute) el.removeAttribute('id');
+    if (el.id && el.id !== 'ytplus-settings-row') el.id = '';
+    var kids = elementChildren(el);
+    var i;
+    for (i = 0; i < kids.length; i++) stripIds(kids[i]);
+  }
+
+  function replaceVisibleLabel(row) {
+    var leaves = [];
+    function collect(el) {
+      var ch = elementChildren(el);
+      if (!ch.length) { leaves.push(el); return; }
+      var n;
+      for (n = 0; n < ch.length; n++) collect(ch[n]);
+    }
+    collect(row);
+    var i, t;
+    for (i = 0; i < leaves.length; i++) {
+      if (isChevron(leaves[i])) continue;
+      t = leaves[i].textContent || '';
+      if (matchesLabel(t, SETTINGS_PAGE_LABELS) || matchesLabel(t, ACCOUNT_MENU_LABELS)) {
+        leaves[i].textContent = 'YouTube +';
+        return true;
+      }
+    }
+    var cn = row.childNodes;
+    if (cn) {
+      for (i = 0; i < cn.length; i++) {
+        if (cn[i].nodeType === 3 && (matchesLabel(cn[i].nodeValue, SETTINGS_PAGE_LABELS) || matchesLabel(cn[i].nodeValue, ACCOUNT_MENU_LABELS))) {
+          cn[i].nodeValue = 'YouTube +';
+          return true;
+        }
+      }
+    }
+    t = row.textContent || '';
+    if (!(matchesLabel(t, SETTINGS_PAGE_LABELS) || matchesLabel(t, ACCOUNT_MENU_LABELS))) return false;
+    var icons = [];
+    var kids = elementChildren(row);
+    for (i = 0; i < kids.length; i++) if (isChevron(kids[i])) icons.push(kids[i]);
+    row.textContent = 'YouTube +';
+    for (i = 0; i < icons.length; i++) {
+      var still = elementChildren(row);
+      var present = false;
+      var j;
+      for (j = 0; j < still.length; j++) if (still[j] === icons[i]) present = true;
+      if (!present && row.appendChild) row.appendChild(icons[i]);
+    }
+    return true;
+  }
+
+  function rowShowsLabel(row) {
+    var all = [];
+    walkElements(row, all);
+    var i, t = '';
+    for (i = 0; i < all.length; i++) {
+      if (!elementChildren(all[i]).length && all[i].textContent) t += ' ' + all[i].textContent;
+    }
+    return normLabel(t).indexOf('youtube +') !== -1;
+  }
+
+  function ensureChevron(row, doc) {
+    if (rowHasChevron(row) || !doc || typeof doc.createElement !== 'function') return;
+    var icon = doc.createElement('span');
+    icon.className = 'yt-icon chevron-right';
+    if (icon.setAttribute) {
+      icon.setAttribute('class', 'yt-icon chevron-right');
+      icon.setAttribute('aria-hidden', 'true');
+    }
+    if (typeof icon.innerHTML === 'string' || icon.innerHTML === '') {
+      icon.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path></svg>';
+    } else {
+      icon.textContent = '\u203A';
+    }
+    if (row.appendChild) row.appendChild(icon);
+  }
+
+  function openNativeSettings(ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    postToApp({ type: 'settings' });
+    return false;
+  }
+
+  function insertAfter(parent, node, after) {
+    var kids = elementChildren(parent);
+    var i, at = -1;
+    for (i = 0; i < kids.length; i++) if (kids[i] === after) at = i;
+    var next = at >= 0 ? kids[at + 1] : null;
+    if (next && parent.insertBefore) parent.insertBefore(node, next);
+    else if (parent.appendChild) parent.appendChild(node);
+  }
+
+  // One entry, cloned from a real category row so it keeps YouTube's padding,
+  // type, and chevron. It sits with those rows, above the page footer, and
+  // opens the native sheet. Re-inserted after SPA redraws.
   function mountSettingsEntry(doc) {
     doc = doc || D;
     if (!doc || typeof doc.createElement !== 'function') return false;
@@ -1136,25 +1265,49 @@
     }
     var host = pages[0] || accounts[0];
     if (!host) return false;
+    kind = pages.length ? 'page' : 'account';
     var kids = elementChildren(host);
+    var proto = null;
+    var lastCategory = null;
     for (i = 0; i < kids.length; i++) {
       if (kids[i].getAttribute && kids[i].getAttribute('data-ytplus-settings') === '1') return true;
+      if (!isCategoryRow(kids[i], kind)) continue;
+      lastCategory = kids[i];
+      if (!proto || rowHasChevron(kids[i])) proto = kids[i];
     }
-    var row = doc.createElement('button');
+    if (!proto) return false;
+    var row = null;
+    if (typeof proto.cloneNode === 'function') {
+      try { row = proto.cloneNode(true); } catch (e) { row = null; }
+    }
+    if (!row) row = doc.createElement('button');
+    stripIds(row);
+    dropHrefs(row);
+    if (proto.className && !row.className) row.className = proto.className;
+    var copiedClass = proto.getAttribute && proto.getAttribute('class');
+    if (copiedClass && row.setAttribute && !(row.getAttribute && row.getAttribute('class'))) row.setAttribute('class', copiedClass);
+    replaceVisibleLabel(row);
+    if (!rowShowsLabel(row)) {
+      var span = doc.createElement('span');
+      span.className = 'compact-link-text';
+      span.textContent = 'YouTube +';
+      if (span.setAttribute) span.setAttribute('class', 'compact-link-text');
+      var first = elementChildren(row)[0];
+      if (first && row.insertBefore) row.insertBefore(span, first);
+      else if (row.appendChild) row.appendChild(span);
+    }
+    ensureChevron(row, doc);
     if (row.setAttribute) {
-      row.setAttribute('type', 'button');
       row.setAttribute('data-ytplus-settings', '1');
       row.setAttribute('aria-label', 'YouTube +');
+      row.setAttribute('role', 'button');
     }
-    row.type = 'button';
-    row.textContent = 'YouTube +';
-    if (row.style) row.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;color:#f1f1f1;border:0;padding:14px 16px;font:400 16px -apple-system,BlinkMacSystemFont,sans-serif;';
-    row.onclick = function (ev) {
-      if (ev && ev.preventDefault) ev.preventDefault();
-      if (ev && ev.stopPropagation) ev.stopPropagation();
-      postToApp({ type: 'settings' });
-    };
-    if (host.appendChild) host.appendChild(row);
+    row.onclick = openNativeSettings;
+    if (row.addEventListener) row.addEventListener('click', openNativeSettings, true);
+    if (!row.className && !(row.getAttribute && row.getAttribute('class')) && row.style) {
+      row.style.cssText = 'display:flex;align-items:center;box-sizing:border-box;width:100%;min-height:48px;margin:0;padding:0 16px;border:0;background:transparent;color:#f1f1f1;font:400 16px Roboto,Arial,sans-serif;text-align:left;';
+    }
+    insertAfter(host, row, lastCategory);
     return true;
   }
 
@@ -1282,12 +1435,9 @@
   }
 
   function isRemoveControl(el) {
-    if (!el || el.id === 'ytplus-clear-history') return false;
-    if (el.getAttribute && el.getAttribute('id') === 'ytplus-clear-history') return false;
+    if (!el) return false;
     var text = normLabel(el.textContent || '');
-    if (text === 'remove all') return false;
     var label = el.getAttribute ? String(el.getAttribute('aria-label') || el.getAttribute('title') || '') : '';
-    if (/remove all/i.test(label)) return false;
     if (/remove|delete/i.test(label)) return true;
     if (text === 'remove' || text === 'delete') return true;
     return false;
@@ -1343,64 +1493,6 @@
     eachSuggestionRow(doc, function (row, q) {
       if (blocked[normQuery(q)] && row.style) row.style.display = 'none';
     });
-  }
-
-  function clearSearchHistory(doc) {
-    doc = doc || D;
-    var n = 0;
-    eachSuggestionRow(doc, function (row, q) {
-      if (rememberSearchRemoval(q)) n++;
-      var token = row.getAttribute && row.getAttribute('data-ytplus-token');
-      if (token) tryFeedback(token);
-      if (row.style) row.style.display = 'none';
-    });
-    var i;
-    for (i = 0; i < recentHistory.length; i++) {
-      if (rememberSearchRemoval(recentHistory[i].query)) n++;
-      if (recentHistory[i].token) tryFeedback(recentHistory[i].token);
-    }
-    scrubSearch(doc);
-    return n;
-  }
-
-  function requestClearSearchHistory(doc) {
-    if (typeof W.confirm !== 'function') return false;
-    if (!W.confirm('Remove all search history? This cannot be undone.')) return false;
-    clearSearchHistory(doc || D);
-    return true;
-  }
-
-  function mountClearSearch(doc) {
-    doc = doc || D;
-    if (!doc || typeof doc.createElement !== 'function') return false;
-    var parent = null;
-    eachSuggestionRow(doc, function (row) { if (!parent) parent = row.parentNode; });
-    if (!parent) return false;
-    var kids = elementChildren(parent);
-    var i;
-    for (i = 0; i < kids.length; i++) {
-      if (kids[i].id === 'ytplus-clear-history') return true;
-    }
-    var btn = doc.createElement('button');
-    btn.id = 'ytplus-clear-history';
-    if (btn.setAttribute) {
-      btn.setAttribute('id', 'ytplus-clear-history');
-      btn.setAttribute('type', 'button');
-    }
-    btn.textContent = 'Remove All';
-    if (btn.style) {
-      btn.style.cssText = 'display:block;width:100%;margin:0;padding:14px 16px;border:0;border-bottom:1px solid rgba(255,255,255,.12);background:#0f0f0f;color:#f1f1f1;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;';
-      btn.style.backgroundColor = '#0f0f0f';
-      btn.style.color = '#f1f1f1';
-    }
-    btn.onclick = function (ev) {
-      if (ev && ev.preventDefault) ev.preventDefault();
-      if (ev && ev.stopPropagation) ev.stopPropagation();
-      requestClearSearchHistory(doc);
-    };
-    if (parent.insertBefore) parent.insertBefore(btn, elementChildren(parent)[0] || null);
-    else if (parent.appendChild) parent.appendChild(btn);
-    return true;
   }
 
   function paintSearch(doc) {
@@ -1594,7 +1686,6 @@
         hideOpenApp();
         mountSettingsEntry(D);
         scrubSearch(D);
-        mountClearSearch(D);
         paintSearch(D);
       }, true);
       D.addEventListener('click', function (ev) {
@@ -1628,7 +1719,7 @@
     try { syncWatchBar(); } catch (e6) { /* ignore */ }
     try { hideOpenApp(); } catch (e7) { /* ignore */ }
     try { mountSettingsEntry(D); } catch (e8) { /* ignore */ }
-    try { scrubSearch(D); mountClearSearch(D); paintSearch(D); } catch (e9) { /* ignore */ }
+    try { scrubSearch(D); paintSearch(D); } catch (e9) { /* ignore */ }
     try {
       var playing = activeVideo();
       if (playing) publishNowPlaying(playing, false);
@@ -1691,9 +1782,6 @@
     blockedSearches: function () { var set = loadBlock(); var k, out = []; for (k in set) if (hasOwn(set, k)) out.push(k); return out; },
     handleSearchClick: handleSearchClick,
     scrubSearch: scrubSearch,
-    clearSearchHistory: clearSearchHistory,
-    requestClearSearchHistory: requestClearSearchHistory,
-    mountClearSearch: mountClearSearch,
     paintSearch: paintSearch,
     remoteCommand: remoteCommand,
     publishNowPlaying: publishNowPlaying,

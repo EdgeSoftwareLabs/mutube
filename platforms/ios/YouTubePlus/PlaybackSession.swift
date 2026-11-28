@@ -61,11 +61,16 @@ enum PlaybackSession {
     }
 
     static func holdInBackground() {
-        holdGeneration += 1
-        let generation = holdGeneration
-        cancelNudges()
         activateForBackground()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+        // willResignActive and the scene phase both call this. Cancelling the
+        // nudges we just scheduled drops the resume, and audio stops.
+        if backgroundTask != .invalid {
+            nudge(true, holdGeneration)
+            return
+        }
+        holdGeneration += 1
+        let generation = holdGeneration
         if backgroundTask == .invalid {
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "YouTubePlusAudio") {
                 endHold()
@@ -81,12 +86,13 @@ enum PlaybackSession {
 
     static func returnToForeground() {
         // Drop every pending 250/750ms retry before the page can call play()
-        // over a pause the user just made.
+        // over a pause the user just made. Do not do this while backgrounding.
         holdGeneration += 1
+        let retired = holdGeneration
         cancelNudges()
         endHold()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.setAppActive(true);", completionHandler: nil)
+        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.setAppActive(true, \(retired));", completionHandler: nil)
     }
 
     static func installLifecycle() {
@@ -107,7 +113,7 @@ enum PlaybackSession {
     private static func scheduleNudge(_ generation: Int, _ delay: Double, _ force: Bool) {
         let item = DispatchWorkItem {
             guard generation == holdGeneration else { return }
-            nudge(force)
+            nudge(force, generation)
             if delay >= 0.75 { endHold() }
         }
         nudgeItems.append(item)
@@ -119,10 +125,13 @@ enum PlaybackSession {
         nudgeItems.removeAll()
     }
 
-    private static func nudge(_ force: Bool) {
+    private static func nudge(_ force: Bool, _ generation: Int) {
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
         let flag = force ? "true" : "false"
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.holdForBackground(\(flag));", completionHandler: nil)
+        webView?.evaluateJavaScript(
+            "window.YouTubePlus&&window.YouTubePlus.holdForBackground(\(flag), \(generation));",
+            completionHandler: nil
+        )
     }
 
     private static func endHold() {
@@ -203,14 +212,13 @@ enum PlaybackSession {
             run("toggle", nil)
             return .success
         }
-        center.skipForwardCommand.addTarget { event in
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? 10
-            run("skip", interval)
+        center.skipForwardCommand.addTarget { _ in
+            // Always 10. The event interval is 5 when WebKit's media session owns the button.
+            run("skip", 10)
             return .success
         }
-        center.skipBackwardCommand.addTarget { event in
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? 10
-            run("skip", -interval)
+        center.skipBackwardCommand.addTarget { _ in
+            run("skip", -10)
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { event in

@@ -385,13 +385,14 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.4'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.5'") !== -1, 'script version');
+  check(scriptText.indexOf('seekOffset') === -1, 'lock-screen skip ignores the 5 second media-session offset');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
   check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
   check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.4', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.5', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -399,7 +400,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.4', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.5', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -859,6 +860,10 @@ async function main() {
   media.currentSrc = 'https://example.com/b.mp4';
   var changed = YP.publishNowPlaying(media, false);
   check(changed && changed.duration === 200, 'a new video updates now playing immediately');
+  check(YP.remoteCommand('skip', 5) === true, 'a 5 second skip request is accepted');
+  check(media.currentTime === 50, 'skip is 10 seconds even if the event says 5');
+  check(YP.remoteCommand('skip', -5) === true, 'a 5 second skip back is accepted');
+  check(media.currentTime === 40, 'skip back is 10 seconds even if the event says 5');
   check(YP.remoteCommand('skip', 10) === true, 'skip forward');
   check(media.currentTime === 50, 'skip forward is 10 seconds');
   check(YP.remoteCommand('skip', 10) === false, 'a duplicate remote command is ignored');
@@ -900,7 +905,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.4', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.5', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -932,6 +937,8 @@ async function main() {
   var updateFn = playbackSwift.split('static func update')[1].split('private static func number')[0];
   check(updateFn.indexOf('configure()') === -1 && updateFn.indexOf('setActive') === -1, 'now playing updates do not reactivate audio');
   check(playbackSwift.indexOf('skipBackwardCommand') !== -1 && playbackSwift.indexOf('preferredIntervals = [10]') !== -1, 'skip back 10');
+  check(playbackSwift.indexOf('run("skip", 10)') !== -1, 'native skip forward is always 10 seconds');
+  check(playbackSwift.indexOf('run("skip", -10)') !== -1, 'native skip back is always 10 seconds');
   check(playbackSwift.indexOf('skipForwardCommand') !== -1, 'skip forward');
   check(playbackSwift.indexOf('nextTrackCommand.isEnabled = false') !== -1, 'next track hidden');
   check(playbackSwift.indexOf('previousTrackCommand.isEnabled = false') !== -1, 'previous track hidden');

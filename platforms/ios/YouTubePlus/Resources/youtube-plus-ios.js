@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.4';
+  var VERSION = '1.1.5';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -775,6 +775,7 @@
   var rawState = 'visible';
   var realHiddenGet = null;
   var acceptHold = true;
+  var retiredHold = 0;
   var lastTouchAt = 0;
 
   function pageReallyHidden() {
@@ -870,10 +871,12 @@
     origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      // A tap in the foreground is the user, even if WebKit still reports the
-      // page hidden for a moment after we come back. A pause with no tap,
-      // while the page is hidden or we are already backgrounded, is the lock.
+      // A tap while we are in the foreground is the user, including when
+      // WebKit still reports the page hidden right after we come back.
+      // Anything else while hidden or backgrounded is the lock/home transition
+      // and must not be stored as a user pause, or audio will not continue.
       if (recentUserGesture() && appActive && !backgrounding) {
+        this.__ytplusExplicitPause = true;
         markUserPause(this);
         if (typeof origPause === 'function') return origPause.apply(this, arguments);
         return;
@@ -883,6 +886,7 @@
         log('blocked pause');
         return;
       }
+      this.__ytplusExplicitPause = true;
       markUserPause(this);
       if (typeof origPause === 'function') return origPause.apply(this, arguments);
     };
@@ -894,7 +898,10 @@
   }
 
   function recentUserGesture() {
-    return !!lastTouchAt && (Date.now() - lastTouchAt) < 800;
+    // Only a tap in the same moment as pause(). An older touch (watching,
+    // then leaving the app) must not turn WebKit's background pause into
+    // a user pause, or audio stops when the app resigns active.
+    return !!lastTouchAt && (Date.now() - lastTouchAt) < 200;
   }
 
   function cancelRecover() {
@@ -924,6 +931,7 @@
     if (isFinite(rate) && rate > 0) video.__ytplusSavedRate = rate;
     if (!video.__ytplusSavedRate) video.__ytplusSavedRate = 1;
     try { video.playbackRate = 0; } catch (e) { /* ignore */ }
+    publishNowPlaying(video, true);
   }
 
   function releaseForPlayback(video) {
@@ -936,6 +944,7 @@
     if (video.paused && typeof video.play === 'function') {
       try { video.play(); } catch (e2) { /* ignore */ }
     }
+    publishNowPlaying(video, true);
   }
 
   function resumeWanted() {
@@ -952,9 +961,14 @@
     }
   }
 
-  function holdForBackground(force) {
+  function holdForBackground(force, generation) {
     // Retries pass force=false. After setAppActive(true) those are ignored.
-    // A new background entry passes force=true.
+    // A generation from a hold we already retired (we came back) is ignored
+    // even if it was the forced first nudge.
+    if (typeof generation === 'number' && generation <= retiredHold) {
+      log('stale hold ignored');
+      return false;
+    }
     if (!force && !acceptHold) {
       log('stale hold ignored');
       return false;
@@ -1005,17 +1019,18 @@
     }, 1500);
   }
 
-  function setAppActive(active) {
+  function setAppActive(active, generation) {
     var was = appActive;
     if (!active) {
       acceptHold = true;
-      holdForBackground(true);
+      holdForBackground(true, generation);
       log('appActive', false);
       return;
     }
     // Synchronous: a background retry that arrives after this returns must
     // see the foreground and do nothing.
     acceptHold = false;
+    if (typeof generation === 'number') retiredHold = generation;
     appActive = true;
     backgrounding = false;
     if (!was) scheduleForegroundRecover();
@@ -1737,17 +1752,30 @@
       }
       if (!appActive && ms.playbackState !== undefined) ms.playbackState = info.rate > 0 ? 'playing' : 'paused';
     } catch (e) { /* WebKit rejects a position past the duration */ }
-    if (ms.__ytplusBound) return;
-    ms.__ytplusBound = true;
+    // Re-apply every time. m.youtube.com installs its own handlers, and the
+    // lock screen then seeks by WebKit's default of five seconds.
+    // Ours always seek ten seconds.
     bindMediaSession(ms, 'play', function () { remoteCommand('play'); });
     bindMediaSession(ms, 'pause', function () { remoteCommand('pause'); });
-    bindMediaSession(ms, 'seekbackward', function (d) { remoteCommand('skip', -((d && d.seekOffset) || 10)); });
-    bindMediaSession(ms, 'seekforward', function (d) { remoteCommand('skip', (d && d.seekOffset) || 10); });
+    bindMediaSession(ms, 'seekbackward', function () { remoteCommand('skip', -10); });
+    bindMediaSession(ms, 'seekforward', function () { remoteCommand('skip', 10); });
     bindMediaSession(ms, 'seekto', function (d) {
       if (d && typeof d.seekTime === 'number') remoteCommand('seek', d.seekTime);
     });
     bindMediaSession(ms, 'nexttrack', null);
     bindMediaSession(ms, 'previoustrack', null);
+    if (!ms.__ytplusClaim && typeof ms.setActionHandler === 'function') {
+      ms.__ytplusClaim = true;
+      var origSet = ms.setActionHandler;
+      ms.setActionHandler = function (name, handler) {
+        if (name === 'seekforward') return origSet.call(this, name, function () { remoteCommand('skip', 10); });
+        if (name === 'seekbackward') return origSet.call(this, name, function () { remoteCommand('skip', -10); });
+        if (name === 'play') return origSet.call(this, name, function () { remoteCommand('play'); });
+        if (name === 'pause') return origSet.call(this, name, function () { remoteCommand('pause'); });
+        if (name === 'nexttrack' || name === 'previoustrack') return origSet.call(this, name, null);
+        return origSet.call(this, name, handler);
+      };
+    }
   }
 
   function publishNowPlaying(video, force) {
@@ -1807,9 +1835,10 @@
       if (video.__ytplusUserPaused || video.paused || Number(video.playbackRate) === 0) releaseForPlayback(video);
       else if (!appActive || backgrounding) freezeForBackground(video);
       else userPause(video);
-    } else if (name === 'skip') {
+    } else     if (name === 'skip') {
+      // Lock-screen skip is always 10 seconds, even if a handler was told five.
       var delta = Number(value);
-      if (!isFinite(delta)) delta = 10;
+      if (!isFinite(delta) || Math.abs(delta) !== 10) delta = delta < 0 ? -10 : 10;
       setTime(video, (Number(video.currentTime) || 0) + delta);
     } else if (name === 'seek') {
       var at = Number(value);

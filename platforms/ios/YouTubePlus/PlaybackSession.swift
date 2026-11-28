@@ -9,15 +9,33 @@ import WebKit
 enum PlaybackSession {
     private static weak var webView: WKWebView?
     private static var commandsInstalled = false
+    private static var didActivate = false
     private static var nowInfo: [String: Any] = [:]
     private static var artworkURL = ""
     private static var artworkTask: URLSessionDataTask?
 
+    /// Category is set once. Calling `setActive` again while a video is
+    /// starting interrupts WebKit and the player drops into the buffer spinner.
     static func configure() {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            if !didActivate {
+                try session.setActive(true)
+                didActivate = true
+            }
+        } catch {
+            NSLog("[YouTube+] AVAudioSession: %@", error.localizedDescription)
+        }
+    }
+
+    /// The app is leaving the foreground. Activate again so locked-screen audio keeps the session.
+    static func activateForBackground() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
             try session.setActive(true)
+            didActivate = true
         } catch {
             NSLog("[YouTube+] AVAudioSession: %@", error.localizedDescription)
         }
@@ -32,7 +50,7 @@ enum PlaybackSession {
     /// Scene is no longer active. Leave media running and put our now-playing
     /// info back in case WebKit cleared it while hiding the page.
     static func keepAlive() {
-        configure()
+        activateForBackground()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
         if !nowInfo.isEmpty {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nowInfo
@@ -40,7 +58,6 @@ enum PlaybackSession {
     }
 
     static func update(from body: [String: Any]) {
-        configure()
         var info = nowInfo
         if let title = body["title"] as? String, !title.isEmpty {
             info[MPMediaItemPropertyTitle] = title

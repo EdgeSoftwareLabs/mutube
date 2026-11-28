@@ -385,13 +385,13 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.1'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.2'") !== -1, 'script version');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
   check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
   check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.1', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.2', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -399,7 +399,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.1', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.2', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -576,9 +576,14 @@ async function main() {
   check(doc.webkitHidden === false, 'webkitHidden');
   var vis = env.listeners.filter(function (l) { return l.type === 'visibilitychange'; });
   check(vis.length >= 2, 'capture listeners on window and document');
-  var ev = { stopped: false, stopImmediatePropagation: function () { this.stopped = true; } };
+  var ev = { stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } };
   vis[0].fn(ev);
-  check(ev.stopped === true, 'visibilitychange stopped while background play is on');
+  check(ev.stopped === false, 'visibilitychange is left alone in the foreground');
+  YP.setAppActive(false);
+  var evBg = { stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } };
+  vis[0].fn(evBg);
+  check(evBg.stopped === true, 'visibilitychange stopped while the app is backgrounded');
+  YP.setAppActive(true);
   YP.applySettings({ backgroundPlay: false });
   check(doc.hidden === true, 'real hidden value when background play is off');
   check(doc.visibilityState === 'hidden', 'real visibilityState when background play is off');
@@ -626,6 +631,19 @@ async function main() {
   doc.querySelectorAll = function (sel) { return sel === 'video' ? [userPaused] : []; };
   YP.setAppActive(false);
   check(userPaused.plays === pausedPlays, 'a video the user paused stays paused in the background');
+  YP.setAppActive(true);
+  var foreground = new win.HTMLMediaElement();
+  foreground.paused = false;
+  foreground.currentTime = 8;
+  foreground.duration = 200;
+  var foregroundPlays = foreground.plays || 0;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [foreground] : []; };
+  vis[0].fn({ stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } });
+  YP.publishNowPlaying(foreground, true);
+  check((foreground.plays || 0) === foregroundPlays, 'foreground now-playing does not call play');
+  check(foreground.currentTime === 8, 'foreground now-playing does not seek');
+  foreground.pause();
+  check(foreground.pauses === 1, 'foreground pause still reaches the video');
   YP.setAppActive(true);
   doc.querySelectorAll = function () { return []; };
   reset(YP);
@@ -789,7 +807,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.1', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.2', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -801,9 +819,11 @@ async function main() {
   check(settingsSwift.indexOf('YouTube + Settings') !== -1, 'settings title');
   check(settingsSwift.indexOf('YouTubeToggleStyle') !== -1, 'custom switch style');
   check(settingsSwift.indexOf('.tint(.white)') === -1, 'switches are not tinted white');
-  check(settingsSwift.indexOf('#3f3f3f') !== -1, 'off track');
-  check(settingsSwift.indexOf('#f1f1f1') !== -1, 'on track');
-  check(settingsSwift.indexOf('#0f0f0f') !== -1, 'on knob');
+  check(settingsSwift.indexOf('#717171') !== -1, 'off track');
+  check(settingsSwift.indexOf('#aaaaaa') !== -1, 'on track');
+  check(settingsSwift.indexOf('#909090') !== -1, 'off knob');
+  check(settingsSwift.indexOf('#ffffff') !== -1, 'on knob');
+  check(settingsSwift.indexOf('offset(x: isOn ? 11 : -11)') !== -1, 'knob sits on the track end cap');
   check(settingsSwift.indexOf('.toggleStyle(YouTubeToggleStyle())') !== -1, 'style applies to every toggle');
   check(settingsSwift.indexOf('#available(iOS 17, *)') !== -1, 'isToggle is gated to iOS 17');
   check(settingsSwift.indexOf('accessibilityValue(isOn ? "On" : "Off")') !== -1, 'switch value is announced on iOS 16');
@@ -814,6 +834,9 @@ async function main() {
   var playbackSwift = fs.readFileSync(path.join(swiftDir, 'PlaybackSession.swift'), 'utf8');
   check(playbackSwift.indexOf('setCategory(.playback') !== -1, 'playback category');
   check(playbackSwift.indexOf('setActive(true)') !== -1, 'audio session activates');
+  check(playbackSwift.indexOf('didActivate') !== -1, 'audio session is not activated on every tick');
+  var updateFn = playbackSwift.split('static func update')[1].split('private static func number')[0];
+  check(updateFn.indexOf('configure()') === -1 && updateFn.indexOf('setActive') === -1, 'now playing updates do not reactivate audio');
   check(playbackSwift.indexOf('skipBackwardCommand') !== -1 && playbackSwift.indexOf('preferredIntervals = [10]') !== -1, 'skip back 10');
   check(playbackSwift.indexOf('skipForwardCommand') !== -1, 'skip forward');
   check(playbackSwift.indexOf('nextTrackCommand.isEnabled = false') !== -1, 'next track hidden');

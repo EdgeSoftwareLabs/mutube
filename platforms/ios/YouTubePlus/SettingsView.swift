@@ -85,10 +85,10 @@ struct SettingsView: View {
     }
 }
 
-/// Matches the switches on m.youtube.com Settings (History & privacy):
-/// off is a #3f3f3f track with a light gray knob, on is an #f1f1f1 track
-/// with an #0f0f0f knob. The system toggle's white tint draws both states
-/// as the same solid pill.
+/// Matches the switches on m.youtube.com Settings (Notifications).
+/// YouTube's paper-toggle is a 36×14 track with a 20pt knob centered on the
+/// end caps, so the knob overhangs the bar. Dark-theme tokens:
+/// off track #717171, off knob #909090, on track #aaaaaa, on knob #ffffff.
 struct YouTubeToggleStyle: ToggleStyle {
     @Environment(\.isEnabled) private var isEnabled
 
@@ -129,21 +129,37 @@ private extension View {
 private struct YouTubeSwitch: View {
     var isOn: Bool
 
+    // Points, matching YouTube's paper-toggle metrics.
+    private let trackWidth: CGFloat = 36
+    private let trackHeight: CGFloat = 14
+    private let knobSize: CGFloat = 20
+
+    private var trackColor: Color {
+        isOn
+            ? Color(red: 170.0 / 255.0, green: 170.0 / 255.0, blue: 170.0 / 255.0) // #aaaaaa
+            : Color(red: 113.0 / 255.0, green: 113.0 / 255.0, blue: 113.0 / 255.0) // #717171
+    }
+
+    private var knobColor: Color {
+        isOn
+            ? Color.white // #ffffff
+            : Color(red: 144.0 / 255.0, green: 144.0 / 255.0, blue: 144.0 / 255.0) // #909090
+    }
+
     var body: some View {
-        ZStack(alignment: isOn ? .trailing : .leading) {
+        // The knob's center sits on the track's end cap (7pt in from each end),
+        // so a 20pt knob extends 3pt past the track horizontally and vertically.
+        ZStack {
             Capsule()
-                .fill(isOn
-                      ? Color(red: 0.945, green: 0.945, blue: 0.945) // #f1f1f1
-                      : Color(red: 0.247, green: 0.247, blue: 0.247)) // #3f3f3f
-                .frame(width: 36, height: 14)
+                .fill(trackColor)
+                .frame(width: trackWidth, height: trackHeight)
             Circle()
-                .fill(isOn
-                      ? Color(red: 0.059, green: 0.059, blue: 0.059) // #0f0f0f
-                      : Color(white: 0.78))
-                .frame(width: 20, height: 20)
-                .shadow(color: .black.opacity(0.35), radius: 0.5, y: 1)
+                .fill(knobColor)
+                .frame(width: knobSize, height: knobSize)
+                .shadow(color: Color.black.opacity(0.6), radius: 2.5, x: 0, y: 1)
+                .offset(x: isOn ? 11 : -11)
         }
-        .frame(width: 40, height: 22)
-        .animation(.easeInOut(duration: 0.18), value: isOn)
+        .frame(width: trackWidth + 6, height: knobSize)
+        .animation(.easeInOut(duration: 0.2), value: isOn)
     }
 }

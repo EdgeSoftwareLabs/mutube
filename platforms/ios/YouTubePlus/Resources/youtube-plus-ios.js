@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.1';
+  var VERSION = '1.1.2';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -151,7 +151,6 @@
   var lastNowKey = '';
   var lastCmd = '';
   var lastCmdAt = 0;
-  var lastAudioPing = 0;
   var origMediaPause = null;
 
   // Leaf metadata. Walking these on every Home / Subscriptions / Shorts / You
@@ -798,11 +797,11 @@
       rawState = hidden ? 'hidden' : 'visible';
     };
     function onHiddenEvent(ev) {
-      if (!CFG.backgroundPlay || !ev) return;
-      // A field blur bubbles through window. Only an actual window/document blur
-      // means the app is leaving the foreground.
+      // These events also fire while the video is on screen (player focus,
+      // a control, the first visibilitychange). Swallowing them or calling
+      // play() there stalls playback into a buffer spinner.
+      if (!CFG.backgroundPlay || !ev || appActive) return;
       if (ev.type === 'blur' && ev.target !== W && ev.target !== D) return;
-      backgrounding = true;
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       else if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
       resumeWanted();
@@ -823,9 +822,9 @@
     origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      // YouTube pauses on the visibility event before Swift reports the scene
-      // change. That pause is not the user's, so it must not stick.
-      if (CFG.backgroundPlay && (backgrounding || !appActive)) {
+      // Only the real background transition. A foreground pause is the player's
+      // own (buffering, a seek, the user) and must go through.
+      if (CFG.backgroundPlay && !appActive) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
@@ -837,7 +836,6 @@
     Ctor.prototype.play = function () {
       this.__ytplusUserPaused = false;
       this.__ytplusWantsPlay = true;
-      ensureAudioSession();
       if (typeof origPlay === 'function') return origPlay.apply(this, arguments);
     };
   }
@@ -850,7 +848,7 @@
   }
 
   function resumeWanted() {
-    if (!CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
+    if (appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
     var videos = D.querySelectorAll('video');
     var i, v;
     for (i = 0; i < videos.length; i++) {
@@ -863,19 +861,13 @@
     }
   }
 
-  function ensureAudioSession() {
-    var now = Date.now();
-    if (now - lastAudioPing < 5000) return;
-    lastAudioPing = now;
-    postToApp({ type: 'audioSession' });
-  }
-
   function setAppActive(active) {
     appActive = !!active;
-    if (appActive) backgrounding = false;
-    else {
-      backgrounding = true;
+    backgrounding = !appActive;
+    if (!appActive) {
       resumeWanted();
+      var video = activeVideo();
+      if (video) publishNowPlaying(video, true);
     }
     log('appActive', appActive);
   }
@@ -1580,7 +1572,7 @@
           artwork: info.artwork ? [{ src: info.artwork, sizes: '512x512', type: 'image/jpeg' }] : []
         });
       }
-      if (typeof ms.setPositionState === 'function' && info.duration > 0) {
+      if (!appActive && typeof ms.setPositionState === 'function' && info.duration > 0) {
         var pos = info.elapsed;
         if (pos < 0) pos = 0;
         if (pos > info.duration) pos = info.duration;
@@ -1590,10 +1582,10 @@
           position: pos
         });
       }
-      if (ms.playbackState !== undefined) ms.playbackState = info.rate > 0 ? 'playing' : 'paused';
+      if (!appActive && ms.playbackState !== undefined) ms.playbackState = info.rate > 0 ? 'playing' : 'paused';
     } catch (e) { /* WebKit rejects a position past the duration */ }
-    // If WebKit delivers the lock-screen event to the page instead of the app,
-    // the same remoteCommand path runs. A short debounce there collapses a double delivery.
+    if (ms.__ytplusBound) return;
+    ms.__ytplusBound = true;
     bindMediaSession(ms, 'play', function () { remoteCommand('play'); });
     bindMediaSession(ms, 'pause', function () { remoteCommand('pause'); });
     bindMediaSession(ms, 'seekbackward', function (d) { remoteCommand('skip', -((d && d.seekOffset) || 10)); });

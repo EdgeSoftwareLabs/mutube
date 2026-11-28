@@ -216,10 +216,6 @@ extension YouTubeWebView {
                 onRequestSettings()
                 return
             }
-            if type == "audioSession" {
-                PlaybackSession.configure()
-                return
-            }
             if type == "nowPlaying" {
                 PlaybackSession.update(from: body)
                 return

@@ -6,8 +6,6 @@ final class WebSession: ObservableObject {
     @Published var url: URL
     @Published var canGoBack = false
     @Published var canGoForward = false
-    /// True once Settings sits in YouTube's header row, so the native fallback can hide.
-    @Published var headerActionsMounted = false
     let home: URL
     weak var webView: WKWebView?
 
@@ -34,10 +32,6 @@ final class WebSession: ObservableObject {
     func pushSettings(_ settings: YouTubePlusSettings) {
         let json = settings.scriptJSON()
         webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.applySettings(\(json));", completionHandler: nil)
-    }
-
-    func requestPictureInPicture() {
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.requestPictureInPicture();", completionHandler: nil)
     }
 
     /// Cold launch: `onOpenURL` often arrives while content rules are still compiling,
@@ -107,8 +101,8 @@ extension YouTubeWebView {
         }
 
         func makeWebView() -> WKWebView {
-            session.headerActionsMounted = false
             WebCache.install()
+            PlaybackSession.configure()
             let config = WKWebViewConfiguration()
             config.websiteDataStore = .default()
             config.suppressesIncrementalRendering = false
@@ -173,6 +167,7 @@ extension YouTubeWebView {
 
             self.webView = webView
             session.webView = webView
+            PlaybackSession.attach(webView)
             start(webView)
             return webView
         }
@@ -221,15 +216,12 @@ extension YouTubeWebView {
                 onRequestSettings()
                 return
             }
-            if type == "pip" {
-                session.requestPictureInPicture()
+            if type == "audioSession" {
+                PlaybackSession.configure()
                 return
             }
-            if type == "header" {
-                let mounted = body["mounted"] as? Bool ?? false
-                if session.headerActionsMounted != mounted {
-                    session.headerActionsMounted = mounted
-                }
+            if type == "nowPlaying" {
+                PlaybackSession.update(from: body)
                 return
             }
             guard settings.settings.debugLogging, type == "log" else { return }

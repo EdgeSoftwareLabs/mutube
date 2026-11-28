@@ -40,8 +40,8 @@ channel** stay as YouTube sends them.
 
 - **Ad Block** (on): content rules plus InnerTube filtering, and a DOM fallback that clicks skip and jumps a short ad video to the end.
 - **SponsorBlock** (on): sponsor, intro, outro, self-promotion, and interaction reminders, each with its own toggle. A small toast names the segment that was skipped. Uses the public SponsorBlock API only while the feature is on.
-- **Background Play** (on): `UIBackgroundModes` = `audio`, `AVAudioSession` category `.playback`. The script keeps `document.hidden` / `visibilityState` looking visible and ignores the pause YouTube fires when the app leaves the foreground, so audio continues with the screen locked.
-- **Picture in Picture** (on): inline playback and `allowsPictureInPictureMediaPlayback`. The small PiP button asks the current video to enter Picture in Picture.
+- **Background Play** (on): `UIBackgroundModes` = `audio`, `AVAudioSession` category `.playback` (activated again when playback starts and when the app leaves the foreground). The script keeps `document.hidden` / `visibilityState` looking visible, swallows `visibilitychange` / `pagehide` / window `blur`, and ignores the pause YouTube fires on that transition. A pause the user made themselves is left alone. The web view is told not to suspend media.
+- **Lock screen and Control Center**: play, pause, skip back 10 seconds, skip forward 10 seconds, and scrubbing. Next and previous track are disabled so iOS shows the 10-second buttons. The page reports title, channel, thumbnail, duration, and position. Picture in Picture stays available to the system when that setting is on; there is no PiP button.
 - **DeArrow** (off): replaces clickbait titles and thumbnails with community submissions. The settings row uses the same explanation as the TV app: "DeArrow replaces clickbait titles and thumbnails with community-submitted, more accurate ones."
 - **Return YouTube Dislike** (off) and **Hide Shorts** (off).
 - **Debug Logging** (off): script logs are forwarded to the Xcode console.
@@ -50,7 +50,9 @@ channel** stay as YouTube sends them.
 
 Ad Block, Picture in Picture, DeArrow, and Hide Shorts rebuild the web view so the new document-start configuration applies. SponsorBlock, Background Play, dislike counts, and debug logging apply immediately.
 
-**YouTube + Settings** is a button in YouTube's own header row, placed before Search, so Search and the other header buttons stay visible and tappable in portrait and landscape, on the feed and on a watch page. Until that header button is in the page, a fallback sits in a row under the page rather than on top of it. A two-finger long-press opens Settings as well. Settings live in `UserDefaults`.
+**YouTube + Settings** is a row inside YouTube's own settings list (avatar or You, then Settings). If that list is not on screen, the same row is added to the account menu instead. It is put back after YouTube redraws the page. A two-finger long-press still opens Settings. There is no separate header button. Settings live in `UserDefaults`.
+
+Search history removals are stored in the web view. A suggestion you remove stays gone when you leave and reopen search, and the app also sends YouTube's feedback delete. **Remove All** on the search screen asks first, then blocklists the current history and sends those deletes. The search screen uses the same dark background (`#0F0F0F`) and light text as the rest of the app.
 
 The in-app UI does not say TizenTube and has no social or support links. Credit for the TV userscript this project grew out of stays in the repo [NOTICE](../../NOTICE) and the root README.
 

@@ -106,8 +106,10 @@ long-press a Home tile to see the two new items.
 `https://m.youtube.com` in a WKWebView, injects `youtube-plus-ios.js` at
 document start (bundled, no CDN), and compiles `content-rules.json` into a
 content rule list. Background audio uses `UIBackgroundModes` (`audio`) and
-`AVAudioSession` (`.playback`). Settings, including SponsorBlock categories,
-DeArrow, and Hide Shorts, are a native **YouTube + Settings** sheet stored in
+`AVAudioSession` (`.playback`), including with the screen locked. Lock screen
+and Control Center play, pause, and skip ±10 seconds. Settings, including
+SponsorBlock categories, DeArrow, and Hide Shorts, are a native **YouTube +
+Settings** sheet opened from YouTube's own settings menu and stored in
 UserDefaults. See [platforms/ios/README.md](platforms/ios/README.md).
 
 ```bash

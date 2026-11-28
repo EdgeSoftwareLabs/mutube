@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.0.3';
+  var VERSION = '1.1.0';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -140,8 +140,19 @@
     shortsRemoved: 0,
     titlesReplaced: 0,
     sponsorSkips: 0,
-    pauseBlocked: 0
+    pauseBlocked: 0,
+    searchHidden: 0
   };
+
+  var backgrounding = false;
+  var blockSet = null;
+  var recentHistory = [];
+  var lastNow = 0;
+  var lastNowKey = '';
+  var lastCmd = '';
+  var lastCmdAt = 0;
+  var lastAudioPing = 0;
+  var origMediaPause = null;
 
   // Leaf metadata. Walking these on every Home / Subscriptions / Shorts / You
   // response blocks the main thread before YouTube can request i.ytimg.com.
@@ -196,6 +207,10 @@
 
   function lsGet(key) {
     try { return W.localStorage ? W.localStorage.getItem('ytplus.' + key) : null; } catch (e) { return null; }
+  }
+
+  function lsSet(key, value) {
+    try { if (W.localStorage) W.localStorage.setItem('ytplus.' + key, String(value)); } catch (e) { /* ignore */ }
   }
 
   function applyOverrides(o) {
@@ -385,9 +400,25 @@
     return CFG.adBlock || CFG.hideShorts || CFG.deArrow;
   }
 
+  function hasSuggestionShape(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 5) return false;
+    if (node.searchSuggestionsSectionRenderer || node.searchSuggestionRenderer || node.searchboxSuggestionRenderer) return true;
+    if (isArray(node)) return node.length > 0 && hasSuggestionShape(node[0], depth + 1);
+    var keys = ['contents', 'items', 'contentsArray'];
+    var i;
+    for (i = 0; i < keys.length; i++) {
+      if (node[keys[i]] && hasSuggestionShape(node[keys[i]], depth + 1)) return true;
+    }
+    return false;
+  }
+
   function process(data) {
     if (!isObj(data) || data[MARK]) return data;
-    if (!shouldProcess(data) || !featuresOn()) return data;
+    if (hasSuggestionShape(data, 0)) filterSearchPayload(data);
+    if (!shouldProcess(data) || !featuresOn()) {
+      if (hasSuggestionShape(data, 0)) mark(data);
+      return data;
+    }
     mark(data);
     stats.responses++;
     var beforeAds = stats.adsRemoved;
@@ -405,7 +436,7 @@
     function hooked(text, reviver) {
       var data = orig.call(W.JSON, text, reviver);
       try {
-        if (shouldProcess(data)) data = process(data);
+        if (shouldProcess(data) || hasSuggestionShape(data, 0)) data = process(data);
       } catch (err) {
         log('parse', err && err.message);
       }
@@ -766,16 +797,21 @@
       rawHidden = !!hidden;
       rawState = hidden ? 'hidden' : 'visible';
     };
-    function block(ev) {
+    function onHiddenEvent(ev) {
       if (!CFG.backgroundPlay || !ev) return;
+      // A field blur bubbles through window. Only an actual window/document blur
+      // means the app is leaving the foreground.
+      if (ev.type === 'blur' && ev.target !== W && ev.target !== D) return;
+      backgrounding = true;
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       else if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      resumeWanted();
     }
-    var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze'];
+    var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze', 'blur'];
     var i;
     for (i = 0; i < events.length; i++) {
-      if (W.addEventListener) W.addEventListener(events[i], block, true);
-      if (D.addEventListener) D.addEventListener(events[i], block, true);
+      if (W.addEventListener) W.addEventListener(events[i], onHiddenEvent, true);
+      if (D.addEventListener) D.addEventListener(events[i], onHiddenEvent, true);
     }
   }
 
@@ -784,38 +820,63 @@
     if (typeof Ctor === 'undefined' || !Ctor.prototype || Ctor.prototype.__ytplusPause) return;
     var origPause = Ctor.prototype.pause;
     var origPlay = Ctor.prototype.play;
+    origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      if (CFG.backgroundPlay && !appActive) {
+      // YouTube pauses on the visibility event before Swift reports the scene
+      // change. That pause is not the user's, so it must not stick.
+      if (CFG.backgroundPlay && (backgrounding || !appActive)) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
       }
+      this.__ytplusUserPaused = true;
       this.__ytplusWantsPlay = false;
       if (typeof origPause === 'function') return origPause.apply(this, arguments);
     };
     Ctor.prototype.play = function () {
+      this.__ytplusUserPaused = false;
       this.__ytplusWantsPlay = true;
+      ensureAudioSession();
       if (typeof origPlay === 'function') return origPlay.apply(this, arguments);
     };
   }
 
-  function resumeMedia() {
+  function userPause(video) {
+    if (!video) return;
+    video.__ytplusUserPaused = true;
+    video.__ytplusWantsPlay = false;
+    if (typeof origMediaPause === 'function') origMediaPause.call(video);
+  }
+
+  function resumeWanted() {
     if (!CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
     var videos = D.querySelectorAll('video');
-    var i;
+    var i, v;
     for (i = 0; i < videos.length; i++) {
-      var v = videos[i];
-      if (v && v.__ytplusWantsPlay && typeof v.play === 'function') {
+      v = videos[i];
+      if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
+      if (v.paused === false) continue;
+      if (typeof v.play === 'function') {
         try { v.play(); } catch (e) { /* ignore */ }
       }
     }
   }
 
+  function ensureAudioSession() {
+    var now = Date.now();
+    if (now - lastAudioPing < 5000) return;
+    lastAudioPing = now;
+    postToApp({ type: 'audioSession' });
+  }
+
   function setAppActive(active) {
-    var was = appActive;
     appActive = !!active;
-    if (was && !appActive) resumeMedia();
+    if (appActive) backgrounding = false;
+    else {
+      backgrounding = true;
+      resumeWanted();
+    }
     log('appActive', appActive);
   }
 
@@ -830,6 +891,15 @@
       video.playsInline = true;
       if ('disablePictureInPicture' in video) video.disablePictureInPicture = !CFG.pictureInPicture;
     } catch (e) { /* ignore */ }
+    if (video.addEventListener) {
+      var force = function () { publishNowPlaying(video, true); };
+      video.addEventListener('play', force);
+      video.addEventListener('pause', force);
+      video.addEventListener('seeked', force);
+      video.addEventListener('loadedmetadata', force);
+      video.addEventListener('ratechange', force);
+      video.addEventListener('timeupdate', function () { publishNowPlaying(video, false); });
+    }
   }
 
   function maybeSkipAds(video) {
@@ -864,7 +934,7 @@
     if (!existing) {
       var style = D.createElement('style');
       style.id = 'ytplus-style';
-      style.textContent = 'html,body{background:#0f0f0f!important;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}#ytplus-header-actions{display:inline-flex;align-items:center;flex:0 0 auto;}#ytplus-header-actions button{flex:0 0 auto;width:40px;height:40px;margin:0 1px;padding:0;border:0;border-radius:20px;background:transparent;color:#f1f1f1;font:600 20px -apple-system,BlinkMacSystemFont,sans-serif;line-height:40px;}';
+      style.textContent = 'html{color-scheme:dark;}html,body{background:#0f0f0f!important;color:#f1f1f1;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}ytm-search,ytm-searchbox,.searchbox,.searchbox-input,ytm-search-suggestions,.suggestion-list,[role="listbox"],input[type="search"]{background:#0f0f0f!important;color:#f1f1f1!important;caret-color:#f1f1f1;}ytm-search-suggestion,[role="option"]{background:#0f0f0f!important;color:#f1f1f1!important;}#ytplus-clear-history{display:block;width:100%;margin:0;padding:14px 16px;border:0;border-bottom:1px solid rgba(255,255,255,.12);background:#0f0f0f;color:#f1f1f1;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;}';
       try { parent.appendChild(style); } catch (e2) { /* ignore */ }
     }
     var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
@@ -972,26 +1042,6 @@
     return n;
   }
 
-  var HEADER_HOST_SELECTORS = [
-    'ytm-mobile-topbar-renderer .header-buttons',
-    'ytm-mobile-topbar-renderer .mobile-topbar-header-buttons',
-    'ytm-mobile-topbar-renderer #buttons',
-    'ytd-masthead #end #buttons',
-    'ytd-masthead #buttons'
-  ];
-
-  function findHeaderHost(doc) {
-    if (!doc || typeof doc.querySelector !== 'function') return null;
-    var i, el;
-    for (i = 0; i < HEADER_HOST_SELECTORS.length; i++) {
-      el = doc.querySelector(HEADER_HOST_SELECTORS[i]);
-      if (el) return el;
-    }
-    var search = doc.querySelector('ytm-mobile-topbar-renderer button[aria-label*="Search" i], ytm-mobile-topbar-renderer button[aria-label*="search" i], ytd-masthead button[aria-label*="Search" i]');
-    if (search && search.parentNode && search.parentNode.nodeType === 1) return search.parentNode;
-    return null;
-  }
-
   function postToApp(payload) {
     try {
       if (W.webkit && W.webkit.messageHandlers && W.webkit.messageHandlers.ytplus) {
@@ -1000,60 +1050,531 @@
     } catch (e) { /* ignore */ }
   }
 
-  function headerButton(doc, action, label, glyph) {
-    var button = doc.createElement('button');
-    button.type = 'button';
-    if (button.setAttribute) {
-      button.setAttribute('type', 'button');
-      button.setAttribute('data-ytplus-action', action);
-      button.setAttribute('aria-label', label);
-    }
-    button.textContent = glyph;
-    if (button.addEventListener) {
-      button.addEventListener('click', function (ev) {
-        if (ev && ev.preventDefault) ev.preventDefault();
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        postToApp({ type: action });
-      });
-    }
-    return button;
+  var SETTINGS_PAGE_LABELS = {
+    general: 1, account: 1, notifications: 1, privacy: 1, playback: 1,
+    'playback and performance': 1, 'connected apps': 1, advanced: 1,
+    'billing & payments': 1, 'billing and payments': 1,
+    'purchases and memberships': 1, autoplay: 1, downloads: 1,
+    'your data in youtube': 1, 'video quality preferences': 1
+  };
+  var ACCOUNT_MENU_LABELS = {
+    settings: 1, help: 1, 'send feedback': 1, 'sign out': 1, 'switch account': 1
+  };
+
+  function normLabel(s) {
+    return String(s || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').toLowerCase();
   }
 
-  // Inserts Settings (and PiP) as the first items in YouTube's header button
-  // row, so Search and the other header controls stay in the layout and stay tappable.
-  function mountHeaderActions(doc) {
+  function elementChildren(el) {
+    var raw = el && el.children;
+    if (!raw || typeof raw.length !== 'number') return [];
+    var out = [];
+    var i;
+    for (i = 0; i < raw.length; i++) if (raw[i]) out.push(raw[i]);
+    return out;
+  }
+
+  function elementText(el) {
+    if (!el) return '';
+    if (typeof el.textContent === 'string' && el.textContent) return el.textContent;
+    var kids = elementChildren(el);
+    var i, parts = [];
+    for (i = 0; i < kids.length; i++) parts.push(elementText(kids[i]));
+    return parts.join(' ');
+  }
+
+  function walkElements(node, out) {
+    if (!node || node.nodeType === 3) return;
+    out.push(node);
+    var kids = elementChildren(node);
+    var i;
+    for (i = 0; i < kids.length; i++) walkElements(kids[i], out);
+  }
+
+  function matchesLabel(text, table) {
+    var n = normLabel(text);
+    if (!n) return false;
+    if (table[n]) return true;
+    var k;
+    for (k in table) {
+      if (!hasOwn(table, k)) continue;
+      if (n.indexOf(k) === 0 && (n.length === k.length || n.charAt(k.length) === ' ')) return true;
+    }
+    return false;
+  }
+
+  function listKind(el) {
+    var kids = elementChildren(el);
+    var page = 0;
+    var account = 0;
+    var i;
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-ytplus-settings')) continue;
+      if (matchesLabel(elementText(kids[i]), SETTINGS_PAGE_LABELS)) page++;
+      if (matchesLabel(elementText(kids[i]), ACCOUNT_MENU_LABELS)) account++;
+    }
+    if (page >= 2) return 'page';
+    if (account >= 2) return 'account';
+    return '';
+  }
+
+  // One entry, on YouTube's settings list when that page is open, otherwise on
+  // the account menu that contains Settings. Re-inserted after SPA redraws.
+  function mountSettingsEntry(doc) {
     doc = doc || D;
     if (!doc || typeof doc.createElement !== 'function') return false;
-    var host = findHeaderHost(doc);
+    var root = doc.body || doc.documentElement || doc;
+    var all = [];
+    walkElements(root, all);
+    var pages = [];
+    var accounts = [];
+    var i, kind;
+    for (i = 0; i < all.length; i++) {
+      kind = listKind(all[i]);
+      if (kind === 'page') pages.push(all[i]);
+      else if (kind === 'account') accounts.push(all[i]);
+    }
+    var host = pages[0] || accounts[0];
     if (!host) return false;
-    var existing = host.querySelector && host.querySelector('#ytplus-header-actions');
-    if (existing) {
-      var pipBtn = existing.querySelector && existing.querySelector('[data-ytplus-action="pip"]');
-      if (pipBtn && pipBtn.style) pipBtn.style.display = CFG.pictureInPicture ? '' : 'none';
-      return true;
+    var kids = elementChildren(host);
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-ytplus-settings') === '1') return true;
     }
-    var wrap = doc.createElement('span');
-    if (wrap.setAttribute) wrap.setAttribute('id', 'ytplus-header-actions');
-    wrap.id = 'ytplus-header-actions';
-    var pip = headerButton(doc, 'pip', 'Picture in Picture', '\u29C9');
-    if (pip.style) pip.style.display = CFG.pictureInPicture ? '' : 'none';
-    if (wrap.appendChild) {
-      wrap.appendChild(pip);
-      wrap.appendChild(headerButton(doc, 'settings', 'YouTube + Settings', '\u2699'));
+    var row = doc.createElement('button');
+    if (row.setAttribute) {
+      row.setAttribute('type', 'button');
+      row.setAttribute('data-ytplus-settings', '1');
+      row.setAttribute('aria-label', 'YouTube +');
     }
-    if (host.insertBefore) host.insertBefore(wrap, host.firstChild || null);
-    else if (host.appendChild) host.appendChild(wrap);
+    row.type = 'button';
+    row.textContent = 'YouTube +';
+    if (row.style) row.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;color:#f1f1f1;border:0;padding:14px 16px;font:400 16px -apple-system,BlinkMacSystemFont,sans-serif;';
+    row.onclick = function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      postToApp({ type: 'settings' });
+    };
+    if (host.appendChild) host.appendChild(row);
     return true;
   }
 
-  var headerMounted = null;
-  function syncHeaderActions() {
-    var ok = false;
-    try { ok = mountHeaderActions(D); } catch (e) { ok = false; }
-    if (ok !== headerMounted) {
-      headerMounted = ok;
-      postToApp({ type: 'header', mounted: ok });
+  function normQuery(s) {
+    return normLabel(s);
+  }
+
+  function loadBlock() {
+    if (blockSet) return blockSet;
+    blockSet = {};
+    try {
+      var raw = lsGet('searchBlock');
+      var list = raw ? JSON.parse(raw) : [];
+      var i;
+      if (isArray(list)) {
+        for (i = 0; i < list.length; i++) blockSet[normQuery(list[i])] = 1;
+      }
+    } catch (e) { blockSet = {}; }
+    return blockSet;
+  }
+
+  function rememberSearchRemoval(query) {
+    var n = normQuery(query);
+    if (!n || n === 'remove' || n === 'remove all') return false;
+    var set = loadBlock();
+    set[n] = 1;
+    var list = [];
+    var k;
+    for (k in set) if (hasOwn(set, k)) list.push(k);
+    lsSet('searchBlock', JSON.stringify(list));
+    return true;
+  }
+
+  function suggestionInner(node) {
+    if (!node || typeof node !== 'object' || isArray(node)) return null;
+    if (node.searchSuggestionRenderer) return node.searchSuggestionRenderer;
+    if (node.searchboxSuggestionRenderer) return node.searchboxSuggestionRenderer;
+    if (node.suggestion && (node.icon || node.serviceEndpoint || node.feedbackEndpoint)) return node;
+    return null;
+  }
+
+  function suggestionQuery(inner) {
+    if (!inner) return '';
+    var s = inner.suggestion;
+    if (typeof s === 'string') return s;
+    if (s && typeof s.simpleText === 'string') return s.simpleText;
+    if (s && s.runs && s.runs[0] && typeof s.runs[0].text === 'string') return s.runs[0].text;
+    if (typeof inner.query === 'string') return inner.query;
+    return '';
+  }
+
+  function suggestionToken(inner) {
+    if (!inner) return '';
+    var ep = inner.serviceEndpoint || inner.feedbackEndpoint || null;
+    if (ep && ep.innertubeCommand) ep = ep.innertubeCommand;
+    var fb = inner.feedbackEndpoint || (ep && (ep.feedbackEndpoint || null));
+    if (fb && typeof fb.feedbackToken === 'string') return fb.feedbackToken;
+    return '';
+  }
+
+  function rememberRecent(query, token) {
+    var n = normQuery(query);
+    if (!n) return;
+    var i;
+    for (i = 0; i < recentHistory.length; i++) {
+      if (recentHistory[i].query === n) {
+        if (token && !recentHistory[i].token) recentHistory[i].token = token;
+        return;
+      }
     }
+    recentHistory.push({ query: n, token: token || '' });
+    if (recentHistory.length > 100) recentHistory.shift();
+  }
+
+  function filterSearchPayload(data) {
+    var blocked = loadBlock();
+    function walk(node, depth) {
+      if (!node || typeof node !== 'object' || depth > 14) return;
+      if (isArray(node)) {
+        var w = 0;
+        var i, inner, q, n;
+        for (i = 0; i < node.length; i++) {
+          inner = suggestionInner(node[i]);
+          if (inner) {
+            q = suggestionQuery(inner);
+            n = normQuery(q);
+            rememberRecent(q, suggestionToken(inner));
+            if (n && blocked[n]) {
+              stats.searchHidden++;
+              continue;
+            }
+          }
+          walk(node[i], depth + 1);
+          node[w++] = node[i];
+        }
+        node.length = w;
+        return;
+      }
+      var k;
+      for (k in node) {
+        if (hasOwn(node, k) && node[k] && typeof node[k] === 'object') walk(node[k], depth + 1);
+      }
+    }
+    walk(data, 0);
+    return data;
+  }
+
+  function tryFeedback(token) {
+    if (!token || typeof W.fetch !== 'function') return;
+    var client = { clientName: 'MWEB', clientVersion: '2.20250101.00.00' };
+    try {
+      if (W.ytcfg && typeof W.ytcfg.get === 'function') {
+        var ctx = W.ytcfg.get('INNERTUBE_CONTEXT');
+        if (ctx && ctx.client) client = ctx.client;
+      }
+    } catch (e) { /* keep the mobile client */ }
+    try {
+      W.fetch('/youtubei/v1/feedback?prettyPrint=false', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ context: { client: client }, feedbackTokens: [token] })
+      }).catch(function () {});
+    } catch (err) { /* the blocklist still hides it */ }
+  }
+
+  function isRemoveControl(el) {
+    if (!el || el.id === 'ytplus-clear-history') return false;
+    if (el.getAttribute && el.getAttribute('id') === 'ytplus-clear-history') return false;
+    var text = normLabel(el.textContent || '');
+    if (text === 'remove all') return false;
+    var label = el.getAttribute ? String(el.getAttribute('aria-label') || el.getAttribute('title') || '') : '';
+    if (/remove all/i.test(label)) return false;
+    if (/remove|delete/i.test(label)) return true;
+    if (text === 'remove' || text === 'delete') return true;
+    return false;
+  }
+
+  function rowQuery(row) {
+    if (!row) return '';
+    var explicit = row.getAttribute && row.getAttribute('data-ytplus-query');
+    if (explicit) return explicit;
+    return String(row.textContent || '').replace(/\b(remove|delete)\b/ig, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  }
+
+  function eachSuggestionRow(doc, fn) {
+    var root = doc && (doc.body || doc.documentElement || doc);
+    if (!root) return;
+    var all = [];
+    walkElements(root, all);
+    var i, kids, j;
+    for (i = 0; i < all.length; i++) {
+      kids = elementChildren(all[i]);
+      for (j = 0; j < kids.length; j++) {
+        if (!isRemoveControl(kids[j])) continue;
+        var q = rowQuery(all[i]);
+        if (q) fn(all[i], q);
+        break;
+      }
+    }
+  }
+
+  function handleSearchClick(target) {
+    var node = target;
+    var hops = 0;
+    var control = null;
+    while (node && hops < 5) {
+      if (isRemoveControl(node)) { control = node; break; }
+      node = node.parentNode;
+      hops++;
+    }
+    if (!control || !control.parentNode) return false;
+    var row = control.parentNode;
+    var query = rowQuery(row);
+    if (!query || normQuery(query).length > 120) return false;
+    rememberSearchRemoval(query);
+    var token = row.getAttribute && (row.getAttribute('data-ytplus-token') || '');
+    if (token) tryFeedback(token);
+    if (row.style) row.style.display = 'none';
+    return true;
+  }
+
+  function scrubSearch(doc) {
+    doc = doc || D;
+    var blocked = loadBlock();
+    eachSuggestionRow(doc, function (row, q) {
+      if (blocked[normQuery(q)] && row.style) row.style.display = 'none';
+    });
+  }
+
+  function clearSearchHistory(doc) {
+    doc = doc || D;
+    var n = 0;
+    eachSuggestionRow(doc, function (row, q) {
+      if (rememberSearchRemoval(q)) n++;
+      var token = row.getAttribute && row.getAttribute('data-ytplus-token');
+      if (token) tryFeedback(token);
+      if (row.style) row.style.display = 'none';
+    });
+    var i;
+    for (i = 0; i < recentHistory.length; i++) {
+      if (rememberSearchRemoval(recentHistory[i].query)) n++;
+      if (recentHistory[i].token) tryFeedback(recentHistory[i].token);
+    }
+    scrubSearch(doc);
+    return n;
+  }
+
+  function requestClearSearchHistory(doc) {
+    if (typeof W.confirm !== 'function') return false;
+    if (!W.confirm('Remove all search history? This cannot be undone.')) return false;
+    clearSearchHistory(doc || D);
+    return true;
+  }
+
+  function mountClearSearch(doc) {
+    doc = doc || D;
+    if (!doc || typeof doc.createElement !== 'function') return false;
+    var parent = null;
+    eachSuggestionRow(doc, function (row) { if (!parent) parent = row.parentNode; });
+    if (!parent) return false;
+    var kids = elementChildren(parent);
+    var i;
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].id === 'ytplus-clear-history') return true;
+    }
+    var btn = doc.createElement('button');
+    btn.id = 'ytplus-clear-history';
+    if (btn.setAttribute) {
+      btn.setAttribute('id', 'ytplus-clear-history');
+      btn.setAttribute('type', 'button');
+    }
+    btn.textContent = 'Remove All';
+    if (btn.style) {
+      btn.style.cssText = 'display:block;width:100%;margin:0;padding:14px 16px;border:0;border-bottom:1px solid rgba(255,255,255,.12);background:#0f0f0f;color:#f1f1f1;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;';
+      btn.style.backgroundColor = '#0f0f0f';
+      btn.style.color = '#f1f1f1';
+    }
+    btn.onclick = function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      requestClearSearchHistory(doc);
+    };
+    if (parent.insertBefore) parent.insertBefore(btn, elementChildren(parent)[0] || null);
+    else if (parent.appendChild) parent.appendChild(btn);
+    return true;
+  }
+
+  function paintSearch(doc) {
+    doc = doc || D;
+    var nodes = [];
+    if (doc && doc.querySelectorAll) {
+      var found = doc.querySelectorAll('ytm-search, ytm-searchbox, ytm-search-suggestions, input[type="search"], [role="listbox"]');
+      var i;
+      if (found && found.length) {
+        for (i = 0; i < found.length; i++) nodes.push(found[i]);
+      }
+    }
+    eachSuggestionRow(doc, function (row) {
+      nodes.push(row);
+      if (row.parentNode) nodes.push(row.parentNode);
+    });
+    var j, el;
+    for (j = 0; j < nodes.length; j++) {
+      el = nodes[j];
+      if (!el || !el.style) continue;
+      el.style.backgroundColor = '#0f0f0f';
+      el.style.color = '#f1f1f1';
+    }
+  }
+
+  function activeVideo() {
+    if (!D || typeof D.querySelectorAll !== 'function') return null;
+    var list = D.querySelectorAll('video');
+    if (!list || !list.length) return null;
+    var i, best = null, bestArea = -1, area;
+    for (i = 0; i < list.length; i++) {
+      if (!list[i]) continue;
+      if (list[i].paused === false && !list[i].ended) return list[i];
+      area = (list[i].videoWidth || 0) * (list[i].videoHeight || 0);
+      if (!best || area >= bestArea) { best = list[i]; bestArea = area; }
+    }
+    return best;
+  }
+
+  function attrContent(el) {
+    if (!el) return '';
+    if (el.getAttribute) {
+      var c = el.getAttribute('content') || el.getAttribute('href');
+      if (c) return c;
+    }
+    return String(el.textContent || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  }
+
+  function readTitle() {
+    if (!D || !D.querySelector) return '';
+    var h = D.querySelector('h1.slim-video-information-title, ytm-slim-video-information-renderer h1, h1');
+    var t = attrContent(h);
+    if (t) return t;
+    return attrContent(D.querySelector('meta[property="og:title"]'));
+  }
+
+  function readAuthor() {
+    if (!D || !D.querySelector) return '';
+    return attrContent(D.querySelector('ytm-video-owner-renderer a, ytm-channel-name, .slim-owner-channel-name'));
+  }
+
+  function readArtwork(video) {
+    var og = D && D.querySelector && D.querySelector('meta[property="og:image"], link[itemprop="thumbnailUrl"]');
+    var u = attrContent(og);
+    if (u) return u;
+    if (video && video.poster) return video.poster;
+    var id = currentVideoId();
+    if (id) return 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg';
+    return '';
+  }
+
+  function bindMediaSession(ms, name, fn) {
+    if (!ms || typeof ms.setActionHandler !== 'function') return;
+    try { ms.setActionHandler(name, fn); } catch (e) { /* ignore */ }
+  }
+
+  function syncMediaSession(info) {
+    var ms = W.navigator && W.navigator.mediaSession;
+    if (!ms) return;
+    try {
+      if (typeof W.MediaMetadata === 'function') {
+        ms.metadata = new W.MediaMetadata({
+          title: info.title || 'YouTube +',
+          artist: info.author || '',
+          artwork: info.artwork ? [{ src: info.artwork, sizes: '512x512', type: 'image/jpeg' }] : []
+        });
+      }
+      if (typeof ms.setPositionState === 'function' && info.duration > 0) {
+        var pos = info.elapsed;
+        if (pos < 0) pos = 0;
+        if (pos > info.duration) pos = info.duration;
+        ms.setPositionState({
+          duration: info.duration,
+          playbackRate: info.rate > 0 ? info.rate : 1,
+          position: pos
+        });
+      }
+      if (ms.playbackState !== undefined) ms.playbackState = info.rate > 0 ? 'playing' : 'paused';
+    } catch (e) { /* WebKit rejects a position past the duration */ }
+    // If WebKit delivers the lock-screen event to the page instead of the app,
+    // the same remoteCommand path runs. A short debounce there collapses a double delivery.
+    bindMediaSession(ms, 'play', function () { remoteCommand('play'); });
+    bindMediaSession(ms, 'pause', function () { remoteCommand('pause'); });
+    bindMediaSession(ms, 'seekbackward', function (d) { remoteCommand('skip', -((d && d.seekOffset) || 10)); });
+    bindMediaSession(ms, 'seekforward', function (d) { remoteCommand('skip', (d && d.seekOffset) || 10); });
+    bindMediaSession(ms, 'seekto', function (d) {
+      if (d && typeof d.seekTime === 'number') remoteCommand('seek', d.seekTime);
+    });
+    bindMediaSession(ms, 'nexttrack', null);
+    bindMediaSession(ms, 'previoustrack', null);
+  }
+
+  function publishNowPlaying(video, force) {
+    video = video || activeVideo();
+    if (!video) return null;
+    var id = currentVideoId() || '';
+    var src = String(video.currentSrc || video.src || '');
+    var key = id + '|' + src;
+    var now = Date.now();
+    if (!force && key === lastNowKey && now - lastNow < 1000) return null;
+    lastNow = now;
+    lastNowKey = key;
+    var duration = (typeof video.duration === 'number' && isFinite(video.duration)) ? video.duration : 0;
+    var elapsed = (typeof video.currentTime === 'number' && isFinite(video.currentTime)) ? video.currentTime : 0;
+    var info = {
+      type: 'nowPlaying',
+      title: readTitle(),
+      author: readAuthor(),
+      artwork: readArtwork(video),
+      duration: duration,
+      elapsed: elapsed,
+      rate: video.paused ? 0 : (Number(video.playbackRate) || 1),
+      videoId: id
+    };
+    syncMediaSession(info);
+    postToApp(info);
+    return info;
+  }
+
+  function setTime(video, t) {
+    if (!isFinite(t)) return;
+    if (t < 0) t = 0;
+    var d = video.duration;
+    if (typeof d === 'number' && isFinite(d) && d > 0 && t > d) t = d;
+    video.currentTime = t;
+  }
+
+  function remoteCommand(name, value) {
+    var sig = String(name) + ':' + (value == null ? '' : String(value));
+    var now = Date.now();
+    if (sig === lastCmd && now - lastCmdAt < 200) return false;
+    lastCmd = sig;
+    lastCmdAt = now;
+    var video = activeVideo();
+    if (!video) return false;
+    if (name === 'play') {
+      if (typeof video.play === 'function') video.play();
+    } else if (name === 'pause') {
+      userPause(video);
+    } else if (name === 'toggle') {
+      if (video.paused) {
+        if (typeof video.play === 'function') video.play();
+      } else userPause(video);
+    } else if (name === 'skip') {
+      var delta = Number(value);
+      if (!isFinite(delta)) delta = 10;
+      setTime(video, (Number(video.currentTime) || 0) + delta);
+    } else if (name === 'seek') {
+      var at = Number(value);
+      if (!isFinite(at)) return false;
+      setTime(video, at);
+    } else return false;
+    publishNowPlaying(video, true);
+    return true;
   }
 
   function installWatchChrome() {
@@ -1067,10 +1588,22 @@
         else if (mq.addListener) mq.addListener(onChange);
       }
     } catch (e) { /* ignore */ }
-    if (D.addEventListener) D.addEventListener('yt-navigate-finish', function () { syncWatchBar(); hideOpenApp(); syncHeaderActions(); }, true);
+    if (D.addEventListener) {
+      D.addEventListener('yt-navigate-finish', function () {
+        syncWatchBar();
+        hideOpenApp();
+        mountSettingsEntry(D);
+        scrubSearch(D);
+        mountClearSearch(D);
+        paintSearch(D);
+      }, true);
+      D.addEventListener('click', function (ev) {
+        try { handleSearchClick(ev && ev.target); } catch (e) { /* ignore */ }
+      }, true);
+    }
     syncWatchBar();
     hideOpenApp();
-    syncHeaderActions();
+    mountSettingsEntry(D);
   }
 
   function onTick() {
@@ -1094,7 +1627,12 @@
     }
     try { syncWatchBar(); } catch (e6) { /* ignore */ }
     try { hideOpenApp(); } catch (e7) { /* ignore */ }
-    try { syncHeaderActions(); } catch (e8) { /* ignore */ }
+    try { mountSettingsEntry(D); } catch (e8) { /* ignore */ }
+    try { scrubSearch(D); mountClearSearch(D); paintSearch(D); } catch (e9) { /* ignore */ }
+    try {
+      var playing = activeVideo();
+      if (playing) publishNowPlaying(playing, false);
+    } catch (e10) { /* ignore */ }
   }
 
   function startLoops() {
@@ -1147,8 +1685,18 @@
     isWatchPage: isWatchPage,
     isOpenAppLabel: isOpenAppLabel,
     pivotTabs: function () { return PIVOT_TABS; },
-    headerHostSelectors: function () { return HEADER_HOST_SELECTORS; },
-    mountHeaderActions: mountHeaderActions,
+    mountSettingsEntry: mountSettingsEntry,
+    rememberSearchRemoval: rememberSearchRemoval,
+    filterSearchPayload: filterSearchPayload,
+    blockedSearches: function () { var set = loadBlock(); var k, out = []; for (k in set) if (hasOwn(set, k)) out.push(k); return out; },
+    handleSearchClick: handleSearchClick,
+    scrubSearch: scrubSearch,
+    clearSearchHistory: clearSearchHistory,
+    requestClearSearchHistory: requestClearSearchHistory,
+    mountClearSearch: mountClearSearch,
+    paintSearch: paintSearch,
+    remoteCommand: remoteCommand,
+    publishNowPlaying: publishNowPlaying,
     stats: function () { return stats; },
     settings: function () { return CFG; }
   };

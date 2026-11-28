@@ -136,10 +136,10 @@ Details: [Tizen](platforms/tizen/README.md), [webOS](platforms/webos/README.md),
 
 ## Icon
 
-Original artwork in YouTube's app-icon style (rounded play button, white
-triangle, "+" badge with a white ring), with the button and badge filled with an
-iridescent pastel gradient on solid black, and a white "YouTube +" wordmark in
-Google Sans Bold (`icons/fonts`, SIL OFL).
+Original artwork in YouTube's app-icon style: a rounded play button and white
+triangle, filled with an iridescent pastel gradient on solid black. The triangle
+sits at the center of a square icon. Wide layouts add a white "YouTube +"
+wordmark in Google Sans Bold (`icons/fonts`, SIL OFL).
 `python3 icons/generate_icons.py` (needs `cairosvg`, `Pillow`, `numpy`)
 regenerates every platform size:
 
@@ -147,7 +147,8 @@ regenerates every platform size:
   black behind), Top Shelf 1920x720 and 2320x720 (@1x/@2x) on black with logo
   and wordmark centred as a group, and the launch image. Previews:
   `icons/png/youtube-plus-tvos-1280x768.png`, `icons/png/youtube-plus-topshelf-1920x720.png`.
-- iOS, Tizen, webOS, web: square icon (gradient logo on black); the 16:9 Tizen
+- iOS, Tizen, webOS, web, and the Safari extension: square icon (gradient logo
+  on black). The Samsung YT+ Helper icon is the greyscale copy. The 16:9 Tizen
   tile and webOS splash use the Top Shelf layout. `icons/youtube-plus.svg` is a
   vector approximation, `icons/youtube-plus-logo.svg` the bare logo.
 

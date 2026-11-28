@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.2';
+  var VERSION = '1.1.3';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -771,47 +771,86 @@
     }).catch(function () { rydPending[id] = false; });
   }
 
+  var rawHidden = false;
+  var rawState = 'visible';
+  var realHiddenGet = null;
+
+  function pageReallyHidden() {
+    if (typeof realHiddenGet === 'function') {
+      try { return !!realHiddenGet.call(D); } catch (e) { /* use the stored flag */ }
+    }
+    return !!rawHidden;
+  }
+
+  function isLifecycleEvent(type) {
+    return type === 'visibilitychange' || type === 'webkitvisibilitychange' ||
+      type === 'pagehide' || type === 'freeze';
+  }
+
   function installVisibilityShim() {
     if (!D || D.__ytplusVis) return;
     D.__ytplusVis = true;
-    var rawHidden = false;
-    var rawState = 'visible';
+    try {
+      var proto = W.Document && W.Document.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'hidden');
+      if (desc && typeof desc.get === 'function') realHiddenGet = desc.get;
+    } catch (e) { /* the test document has no native hidden getter */ }
+    // Lie only while the app is actually backgrounded. In the foreground YouTube
+    // must see the real flag, or its player stalls.
+    var pretendVisible = function () { return CFG.backgroundPlay && !appActive; };
     try {
       Object.defineProperty(D, 'hidden', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? false : rawHidden; },
+        get: function () { return pretendVisible() ? false : (pageReallyHidden() || rawHidden); },
         set: function (v) { rawHidden = !!v; }
       });
       Object.defineProperty(D, 'visibilityState', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? 'visible' : rawState; },
+        get: function () { return pretendVisible() ? 'visible' : (rawState || (pageReallyHidden() ? 'hidden' : 'visible')); },
         set: function (v) { rawState = String(v || ''); }
       });
       Object.defineProperty(D, 'webkitHidden', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? false : rawHidden; }
+        get: function () { return pretendVisible() ? false : (pageReallyHidden() || rawHidden); }
       });
-    } catch (e) { /* a locked document keeps its native getters */ }
+    } catch (e2) { /* a locked document keeps its native getters */ }
     D._ytSetRawVisibility = function (hidden) {
       rawHidden = !!hidden;
       rawState = hidden ? 'hidden' : 'visible';
     };
+    wrapLifecycleListeners(W);
+    wrapLifecycleListeners(D);
     function onHiddenEvent(ev) {
-      // These events also fire while the video is on screen (player focus,
-      // a control, the first visibilitychange). Swallowing them or calling
-      // play() there stalls playback into a buffer spinner.
       if (!CFG.backgroundPlay || !ev || appActive) return;
       if (ev.type === 'blur' && ev.target !== W && ev.target !== D) return;
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       else if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
       resumeWanted();
     }
+    onHiddenEvent.__ytplusInternal = true;
     var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze', 'blur'];
     var i;
     for (i = 0; i < events.length; i++) {
       if (W.addEventListener) W.addEventListener(events[i], onHiddenEvent, true);
       if (D.addEventListener) D.addEventListener(events[i], onHiddenEvent, true);
     }
+  }
+
+  function wrapLifecycleListeners(target) {
+    if (!target || target.__ytplusAdd || typeof target.addEventListener !== 'function') return;
+    var orig = target.addEventListener;
+    target.__ytplusAdd = true;
+    target.addEventListener = function (type, fn, capture) {
+      if (isLifecycleEvent(type) && typeof fn === 'function' && !fn.__ytplusInternal) {
+        var wrapped = function (ev) {
+          if (CFG.backgroundPlay && !appActive) return;
+          return fn.apply(this, arguments);
+        };
+        wrapped.__ytplusWrapped = true;
+        return orig.call(this, type, wrapped, capture);
+      }
+      return orig.call(this, type, fn, capture);
+    };
   }
 
   function installPauseGuard() {
@@ -822,9 +861,10 @@
     origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      // Only the real background transition. A foreground pause is the player's
-      // own (buffering, a seek, the user) and must go through.
-      if (CFG.backgroundPlay && !appActive) {
+      // A lock-screen pause arrives while the document is already hidden, and
+      // sometimes before Swift has reported the scene change. That is not the
+      // user. A pause while the page is visible in the foreground is.
+      if (CFG.backgroundPlay && (!appActive || pageReallyHidden())) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
@@ -861,15 +901,63 @@
     }
   }
 
-  function setAppActive(active) {
-    appActive = !!active;
-    backgrounding = !appActive;
-    if (!appActive) {
-      resumeWanted();
-      var video = activeVideo();
-      if (video) publishNowPlaying(video, true);
+  function holdForBackground() {
+    if (!CFG.backgroundPlay) {
+      appActive = false;
+      backgrounding = true;
+      return false;
     }
-    log('appActive', appActive);
+    appActive = false;
+    backgrounding = true;
+    log('hold for background');
+    resumeWanted();
+    var video = activeVideo();
+    if (video) publishNowPlaying(video, true);
+    return true;
+  }
+
+  function recoverIfStalled() {
+    if (!appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return 0;
+    var videos = D.querySelectorAll('video');
+    var n = 0;
+    var i, v, stalled;
+    for (i = 0; i < videos.length; i++) {
+      v = videos[i];
+      if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
+      stalled = (typeof v.readyState === 'number' && v.readyState < 3) || !!v.__ytplusWaiting;
+      if (!stalled) continue;
+      log('recover stalled video');
+      try { v.currentTime = v.currentTime; } catch (e) { /* ignore */ }
+      if (typeof v.play === 'function') {
+        try { v.play(); } catch (e2) { /* ignore */ }
+      }
+      n++;
+    }
+    return n;
+  }
+
+  function scheduleForegroundRecover() {
+    if (typeof W.setTimeout !== 'function') return;
+    if (W.__ytplusRecover) {
+      if (typeof W.clearTimeout === 'function') W.clearTimeout(W.__ytplusRecover);
+    }
+    W.__ytplusRecover = W.setTimeout(function () {
+      W.__ytplusRecover = null;
+      recoverIfStalled();
+    }, 1500);
+  }
+
+  function setAppActive(active) {
+    var was = appActive;
+    if (!active) {
+      holdForBackground();
+      log('appActive', false);
+      return;
+    }
+    appActive = true;
+    backgrounding = false;
+    if (!was) scheduleForegroundRecover();
+    log('appActive', true);
   }
 
   function configureOne(video) {
@@ -886,10 +974,13 @@
     if (video.addEventListener) {
       var force = function () { publishNowPlaying(video, true); };
       video.addEventListener('play', force);
+      video.addEventListener('playing', function () { video.__ytplusWaiting = false; publishNowPlaying(video, true); });
       video.addEventListener('pause', force);
       video.addEventListener('seeked', force);
       video.addEventListener('loadedmetadata', force);
       video.addEventListener('ratechange', force);
+      video.addEventListener('waiting', function () { video.__ytplusWaiting = true; });
+      video.addEventListener('stalled', function () { video.__ytplusWaiting = true; });
       video.addEventListener('timeupdate', function () { publishNowPlaying(video, false); });
     }
   }
@@ -1723,9 +1814,19 @@
     W.__ytplusTimer = W.setInterval(onTick, 1000);
   }
 
+  function isMainFrame() {
+    try {
+      if (!W.top) return true;
+      return W.top === W;
+    } catch (e) { return true; }
+  }
+
   function boot() {
     installVisibilityShim();
     installPauseGuard();
+    // Subframes only need the lifecycle hooks. The feed parser and the poll
+    // timer stay in the main frame so tab switches do not each walk JSON.
+    if (!isMainFrame()) return;
     injectCSS();
     installWatchChrome();
     startLoops();
@@ -1747,15 +1848,19 @@
     return CFG;
   }
 
-  installParseHook();
-  installResponseHook();
-  installFetchHook();
+  if (isMainFrame()) {
+    installParseHook();
+    installResponseHook();
+    installFetchHook();
+  }
 
   W.YouTubePlus = {
     version: VERSION,
     boot: boot,
     applySettings: applySettings,
     setAppActive: setAppActive,
+    holdForBackground: holdForBackground,
+    recoverIfStalled: recoverIfStalled,
     process: process,
     sponsorDecision: sponsorDecision,
     pickDeArrowTitle: pickDeArrowTitle,

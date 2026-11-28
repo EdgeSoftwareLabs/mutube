@@ -69,11 +69,12 @@ struct ContentView: View {
     }
 
     private func handleScene(_ phase: ScenePhase) {
-        PlaybackSession.configure()
-        let active = phase == .active
-        session.setAppActive(active)
-        if !active {
+        if phase == .active {
+            session.setAppActive(true)
+            PlaybackSession.returnToForeground()
+        } else {
             PlaybackSession.keepAlive()
+            session.setAppActive(false)
         }
     }
 }

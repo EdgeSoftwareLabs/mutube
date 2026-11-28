@@ -115,22 +115,23 @@ extension YouTubeWebView {
             enableElementFullscreen(config)
 
             let controller = config.userContentController
-            // Main frame only. Browse JSON and tab thumbnails live there; subframes
-            // would each install the parser hook and the poll timer.
+            // Every frame, at document start, so the visibility and pause hooks
+            // exist before YouTube's own scripts. The heavy feed parser still
+            // runs only in the main frame (see isMainFrame in the script).
             let prelude = WKUserScript(
                 source: ScriptLoader.prelude(for: settings.settings),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             let bundle = WKUserScript(
                 source: ScriptLoader.userScript(),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             let boot = WKUserScript(
                 source: "window.YouTubePlus&&window.YouTubePlus.boot();",
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             controller.addUserScript(prelude)
             controller.addUserScript(bundle)

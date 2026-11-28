@@ -385,13 +385,13 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.2'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.3'") !== -1, 'script version');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
   check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
   check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.2', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.3', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -399,7 +399,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.2', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.3', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -571,9 +571,13 @@ async function main() {
   check(YP.formatCount(2500000) === '2.5M', 'fractional millions');
 
   doc._ytSetRawVisibility(true);
-  check(doc.hidden === false, 'visibility shim hides the hidden flag');
-  check(doc.visibilityState === 'visible', 'visibilityState stays visible');
-  check(doc.webkitHidden === false, 'webkitHidden');
+  check(doc.hidden === true, 'foreground reports the real hidden flag');
+  check(doc.visibilityState === 'hidden', 'foreground reports the real visibilityState');
+  YP.setAppActive(false);
+  check(doc.hidden === false, 'backgrounded page still looks visible');
+  check(doc.visibilityState === 'visible', 'visibilityState stays visible while backgrounded');
+  check(doc.webkitHidden === false, 'webkitHidden stays visible while backgrounded');
+  YP.setAppActive(true);
   var vis = env.listeners.filter(function (l) { return l.type === 'visibilitychange'; });
   check(vis.length >= 2, 'capture listeners on window and document');
   var ev = { stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } };
@@ -591,7 +595,11 @@ async function main() {
   vis[0].fn(ev2);
   check(ev2.stopped === false, 'events propagate when background play is off');
   YP.applySettings({ backgroundPlay: true });
-  check(doc.hidden === false, 'shim follows the live setting');
+  check(doc.hidden === true, 'foreground still reports a real hidden flag');
+  YP.setAppActive(false);
+  check(doc.hidden === false, 'background play hides the flag only while backgrounded');
+  YP.setAppActive(true);
+  doc._ytSetRawVisibility(false);
   var blur = env.listeners.filter(function (l) { return l.type === 'blur' && l.target === 'window'; });
   check(blur.length === 1, 'window blur is watched');
   var fieldBlur = { type: 'blur', target: { nodeType: 1 }, stopped: false, stopImmediatePropagation: function () { this.stopped = true; } };
@@ -644,7 +652,49 @@ async function main() {
   check(foreground.currentTime === 8, 'foreground now-playing does not seek');
   foreground.pause();
   check(foreground.pauses === 1, 'foreground pause still reaches the video');
+  doc._ytSetRawVisibility(true);
+  var locked = new win.HTMLMediaElement();
+  locked.play();
+  var lockedPlays = locked.plays;
+  locked.pause();
+  check(locked.pauses == null, 'a pause while the page is hidden is not delivered');
+  check(locked.__ytplusUserPaused !== true, 'a hidden-page pause is not a user pause');
+  locked.paused = true;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [locked] : []; };
+  YP.holdForBackground();
+  check(locked.plays === lockedPlays + 1, 'background hold resumes a video the user had not paused');
   YP.setAppActive(true);
+  doc._ytSetRawVisibility(false);
+  var stalled = new win.HTMLMediaElement();
+  stalled.play();
+  stalled.paused = true;
+  stalled.readyState = 2;
+  stalled.__ytplusWaiting = true;
+  stalled.currentTime = 12;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [stalled] : []; };
+  var stalledPlays = stalled.plays;
+  check(YP.recoverIfStalled() === 1, 'returning to the app nudges a stalled video');
+  check(stalled.plays === stalledPlays + 1, 'the nudge calls play');
+  check(stalled.currentTime === 12, 'the nudge seeks in place');
+  stalled.readyState = 4;
+  stalled.__ytplusWaiting = false;
+  var settled = stalled.plays;
+  check(YP.recoverIfStalled() === 0, 'a playing video is not nudged');
+  check(stalled.plays === settled, 'foreground playback is not restarted');
+  stalled.pause();
+  stalled.readyState = 1;
+  stalled.__ytplusWaiting = true;
+  check(YP.recoverIfStalled() === 0, 'a user pause is not resumed on return');
+  var pageHides = 0;
+  doc.addEventListener('pagehide', function () { pageHides++; });
+  var pageHide = env.listeners.filter(function (l) { return l.type === 'pagehide'; }).pop();
+  check(!!pageHide, 'pagehide listener is wrapped');
+  YP.setAppActive(false);
+  pageHide.fn({});
+  check(pageHides === 0, 'pagehide listeners are dropped while backgrounded');
+  YP.setAppActive(true);
+  pageHide.fn({});
+  check(pageHides === 1, 'pagehide listeners run in the foreground');
   doc.querySelectorAll = function () { return []; };
   reset(YP);
 
@@ -807,7 +857,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.2', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.3', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -848,6 +898,10 @@ async function main() {
   check(webViewSwift.indexOf('allowsInlineMediaPlayback = true') !== -1, 'inline playback');
   check(webViewSwift.indexOf('mediaTypesRequiringUserActionForPlayback = []') !== -1, 'playback without a fresh tap');
   check(contentSwift.indexOf('keepAlive()') !== -1, 'background keeps the audio session');
+  check(playbackSwift.indexOf('beginBackgroundTask') !== -1, 'background task keeps the process alive');
+  check(playbackSwift.indexOf('holdForBackground') !== -1, 'page is asked to resume');
+  check(webViewSwift.indexOf('forMainFrameOnly: false') !== -1, 'lifecycle script starts in every frame');
+  check(webViewSwift.indexOf('forMainFrameOnly: true') === -1, 'document-start hook is not main-frame only');
   check(infoPlist.indexOf('youtubeplus') !== -1, 'custom URL scheme');
   check(infoPlist.indexOf('Edge Software Labs LLC') !== -1, 'copyright');
   check(xcconfig.indexOf('com.edgesoftwarelabs.youtubeplus') !== -1, 'bundle id');

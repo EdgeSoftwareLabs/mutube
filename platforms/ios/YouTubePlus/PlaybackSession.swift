@@ -45,16 +45,64 @@ enum PlaybackSession {
         self.webView = webView
         configure()
         installCommands()
+        installLifecycle()
     }
 
-    /// Scene is no longer active. Leave media running and put our now-playing
-    /// info back in case WebKit cleared it while hiding the page.
+    private static var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private static var lifecycleInstalled = false
+
+    /// Scene is no longer active. Keep the audio session and ask the page to
+    /// resume a video the user had not paused. Retries run inside a background
+    /// task because WebKit suspends the page as soon as the screen locks.
     static func keepAlive() {
+        holdInBackground()
+    }
+
+    static func holdInBackground() {
         activateForBackground()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+        if backgroundTask == .invalid {
+            backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "YouTubePlusAudio") {
+                endHold()
+            }
+        }
+        nudge()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { nudge() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+            nudge()
+            endHold()
+        }
         if !nowInfo.isEmpty {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nowInfo
         }
+    }
+
+    static func returnToForeground() {
+        endHold()
+        webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+    }
+
+    static func installLifecycle() {
+        if lifecycleInstalled { return }
+        lifecycleInstalled = true
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+            holdInBackground()
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            returnToForeground()
+        }
+    }
+
+    private static func nudge() {
+        webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.holdForBackground();", completionHandler: nil)
+    }
+
+    private static func endHold() {
+        if backgroundTask == .invalid { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     static func update(from body: [String: Any]) {

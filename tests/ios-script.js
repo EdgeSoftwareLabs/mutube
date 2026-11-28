@@ -223,12 +223,176 @@ function fatBrowse(n) {
   };
 }
 
+function headerNode() {
+  var el = {
+    id: '',
+    children: [],
+    style: {},
+    attrs: {},
+    parentNode: null,
+    firstChild: null,
+    nodeType: 1,
+    setAttribute: function (k, v) {
+      this.attrs[k] = v;
+      if (k === 'id') this.id = v;
+    },
+    getAttribute: function (k) { return this.attrs[k] || null; },
+    appendChild: function (child) {
+      child.parentNode = this;
+      this.children.push(child);
+      this.firstChild = this.children[0];
+    },
+    insertBefore: function (child, before) {
+      child.parentNode = this;
+      var at = this.children.indexOf(before);
+      if (at < 0) this.children.unshift(child);
+      else this.children.splice(at, 0, child);
+      this.firstChild = this.children[0];
+    },
+    querySelector: function (sel) {
+      var i, found;
+      if (sel === '#ytplus-header-actions' || sel === '[data-ytplus-action="pip"]') {
+        for (i = 0; i < this.children.length; i++) {
+          found = this.children[i].querySelector ? this.children[i].querySelector(sel) : null;
+          if (this.children[i].id === 'ytplus-header-actions' && sel === '#ytplus-header-actions') return this.children[i];
+          if (found) return found;
+        }
+      }
+      if (sel === '[data-ytplus-action="pip"]' && this.attrs['data-ytplus-action'] === 'pip') return this;
+      if (sel === '#ytplus-header-actions' && this.id === 'ytplus-header-actions') return this;
+      return null;
+    },
+    addEventListener: function () {},
+    removeAttribute: function (k) {
+      delete this.attrs[k];
+      if (k === 'id') this.id = '';
+      if (k === 'class') this.className = '';
+    },
+    cloneNode: function (deep) {
+      var copy = headerNode();
+      copy.textContent = this.textContent;
+      copy.className = this.className;
+      var k;
+      for (k in this.attrs) {
+        if (Object.prototype.hasOwnProperty.call(this.attrs, k)) copy.setAttribute(k, this.attrs[k]);
+      }
+      if (deep) {
+        var i;
+        for (i = 0; i < this.children.length; i++) {
+          copy.appendChild(this.children[i].cloneNode ? this.children[i].cloneNode(true) : this.children[i]);
+        }
+      }
+      return copy;
+    }
+  };
+  return el;
+}
+
+function labeledRow(text) {
+  var el = headerNode();
+  el.className = 'compact-link';
+  el.setAttribute('class', 'compact-link');
+  var label = headerNode();
+  label.className = 'compact-link-text';
+  label.setAttribute('class', 'compact-link-text');
+  label.textContent = text;
+  var chevron = headerNode();
+  chevron.className = 'chevron-right';
+  chevron.setAttribute('class', 'chevron-right');
+  el.appendChild(label);
+  el.appendChild(chevron);
+  return el;
+}
+
+function entryText(row) {
+  var parts = [];
+  var i;
+  if (row.children) {
+    for (i = 0; i < row.children.length; i++) {
+      if (row.children[i].textContent) parts.push(row.children[i].textContent);
+    }
+  }
+  if (parts.length) return parts.join(' ');
+  return row.textContent || '';
+}
+
+function settingsMenus() {
+  var page = headerNode();
+  ['General', 'History & privacy', 'Privacy'].forEach(function (name) { page.appendChild(labeledRow(name)); });
+  var footer = headerNode();
+  footer.className = 'footer';
+  footer.textContent = 'YouTube, a Google company';
+  page.appendChild(footer);
+  var account = headerNode();
+  ['Settings', 'Help', 'Sign out'].forEach(function (name) { account.appendChild(labeledRow(name)); });
+  var root = headerNode();
+  root.appendChild(page);
+  root.appendChild(account);
+  return {
+    doc: { body: root, createElement: function () { return headerNode(); } },
+    page: page,
+    account: account
+  };
+}
+
+function searchFixture() {
+  function removal(query, token) {
+    var button = headerNode();
+    button.setAttribute('aria-label', 'Remove');
+    button.textContent = 'Remove';
+    var row = headerNode();
+    row.textContent = query + ' Remove';
+    row.setAttribute('data-ytplus-token', token);
+    row.appendChild(button);
+    button.parentNode = row;
+    return row;
+  }
+  var row = removal('cats', 'ROWTOK');
+  var other = removal('dogs', 'ROWTOK2');
+  var list = headerNode();
+  list.appendChild(row);
+  list.appendChild(other);
+  row.parentNode = list;
+  other.parentNode = list;
+  return {
+    doc: {
+      body: list,
+      createElement: function () { return headerNode(); },
+      querySelectorAll: function () { return [list]; }
+    },
+    list: list,
+    row: row,
+    remove: row.children[0]
+  };
+}
+
+function headerFixture() {
+  var search = headerNode();
+  search.setAttribute('aria-label', 'Search');
+  var host = headerNode();
+  host.id = 'buttons';
+  host.appendChild(search);
+  var doc = {
+    createElement: function () { return headerNode(); },
+    querySelector: function (sel) {
+      if (sel === 'ytm-mobile-topbar-renderer .header-buttons') return host;
+      return null;
+    }
+  };
+  return { doc: doc, host: host, search: search };
+}
+
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.0.2'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.6'") !== -1, 'script version');
+  check(scriptText.indexOf('seekOffset') === -1, 'lock-screen skip ignores the 5 second media-session offset');
+  check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
+  check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
+  check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
+  check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.0.2', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.6', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -236,7 +400,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.0.2', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.6', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -248,6 +412,38 @@ async function main() {
   check(YP.isOpenAppLabel('Subscribe') === false, 'subscribe is not the open app pill');
   var pivot = YP.pivotTabs();
   check(pivot.length === 4 && pivot[0].label === 'Home' && pivot[1].label === 'Shorts' && pivot[2].label === 'Subscriptions' && pivot[3].label === 'You', 'bottom tabs');
+  var menus = settingsMenus();
+  win.__messages = [];
+  win.webkit = { messageHandlers: { ytplus: { postMessage: function (m) { win.__messages.push(m); } } } };
+  check(YP.mountSettingsEntry(menus.doc) === true, 'settings entry mounts');
+  var pageLabels = menus.page.children.map(entryText);
+  check(pageLabels[pageLabels.length - 1].indexOf('Google company') !== -1, 'footer stays last');
+  check(pageLabels[pageLabels.length - 2] === 'YouTube +', 'entry sits with the category rows, above the footer');
+  var entry = menus.page.children[pageLabels.length - 2];
+  check(entry.getAttribute('class') === 'compact-link', 'entry clones the category row class');
+  check(entry.children.some(function (child) { return child.className === 'chevron-right'; }), 'entry keeps the chevron');
+  check(menus.account.children.every(function (row) { return entryText(row) !== 'YouTube +'; }), 'account menu is left alone when the settings page is open');
+  entry.onclick();
+  check(win.__messages.some(function (m) { return m.type === 'settings'; }), 'settings entry opens the native sheet');
+  YP.mountSettingsEntry(menus.doc);
+  check(menus.page.children.filter(function (row) { return row.getAttribute('data-ytplus-settings') === '1'; }).length === 1, 'settings entry is not duplicated');
+  menus.page.children = menus.page.children.filter(function (row) { return row.getAttribute('data-ytplus-settings') !== '1'; });
+  menus.page.children[0].textContent = 'General\nApp language';
+  check(YP.mountSettingsEntry(menus.doc) === true, 'settings entry comes back after a redraw');
+  pageLabels = menus.page.children.map(entryText);
+  check(pageLabels[pageLabels.length - 2] === 'YouTube +', 'redraw puts the entry back above the footer');
+  var accountOnly = settingsMenus();
+  accountOnly.page.children = [];
+  check(YP.mountSettingsEntry(accountOnly.doc) === true, 'account menu is the fallback');
+  check(entryText(accountOnly.account.children[accountOnly.account.children.length - 1]) === 'YouTube +', 'fallback entry label');
+  check(accountOnly.account.children[accountOnly.account.children.length - 1].children.some(function (child) { return child.className === 'chevron-right'; }), 'fallback entry has a chevron');
+  reset(YP);
+  var contentView = fs.readFileSync(path.join(root, 'platforms', 'ios', 'YouTubePlus', 'ContentView.swift'), 'utf8');
+  var webViewSwift = fs.readFileSync(path.join(root, 'platforms', 'ios', 'YouTubePlus', 'YouTubeWebView.swift'), 'utf8');
+  check(contentView.indexOf('padding(.top, 8)') === -1, 'settings is not overlaid on the top-right header');
+  check(contentView.indexOf('headerActionsMounted') === -1, 'no header fallback row');
+  check(contentView.indexOf('fallbackControls') === -1, 'fallback controls are gone');
+  check(webViewSwift.indexOf('numberOfTouchesRequired = 2') !== -1, 'two-finger long-press remains');
   check(env.win.__timers.length === 1 && env.win.__timers[0].ms === 1000, 'poll timer');
 
   reset(YP);
@@ -376,14 +572,23 @@ async function main() {
   check(YP.formatCount(2500000) === '2.5M', 'fractional millions');
 
   doc._ytSetRawVisibility(true);
-  check(doc.hidden === false, 'visibility shim hides the hidden flag');
-  check(doc.visibilityState === 'visible', 'visibilityState stays visible');
-  check(doc.webkitHidden === false, 'webkitHidden');
+  check(doc.hidden === true, 'foreground reports the real hidden flag');
+  check(doc.visibilityState === 'hidden', 'foreground reports the real visibilityState');
+  YP.setAppActive(false);
+  check(doc.hidden === false, 'backgrounded page still looks visible');
+  check(doc.visibilityState === 'visible', 'visibilityState stays visible while backgrounded');
+  check(doc.webkitHidden === false, 'webkitHidden stays visible while backgrounded');
+  YP.setAppActive(true);
   var vis = env.listeners.filter(function (l) { return l.type === 'visibilitychange'; });
   check(vis.length >= 2, 'capture listeners on window and document');
-  var ev = { stopped: false, stopImmediatePropagation: function () { this.stopped = true; } };
+  var ev = { stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } };
   vis[0].fn(ev);
-  check(ev.stopped === true, 'visibilitychange stopped while background play is on');
+  check(ev.stopped === false, 'visibilitychange is left alone in the foreground');
+  YP.setAppActive(false);
+  var evBg = { stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } };
+  vis[0].fn(evBg);
+  check(evBg.stopped === true, 'visibilitychange stopped while the app is backgrounded');
+  YP.setAppActive(true);
   YP.applySettings({ backgroundPlay: false });
   check(doc.hidden === true, 'real hidden value when background play is off');
   check(doc.visibilityState === 'hidden', 'real visibilityState when background play is off');
@@ -391,7 +596,17 @@ async function main() {
   vis[0].fn(ev2);
   check(ev2.stopped === false, 'events propagate when background play is off');
   YP.applySettings({ backgroundPlay: true });
-  check(doc.hidden === false, 'shim follows the live setting');
+  check(doc.hidden === true, 'foreground still reports a real hidden flag');
+  YP.setAppActive(false);
+  check(doc.hidden === false, 'background play hides the flag only while backgrounded');
+  YP.setAppActive(true);
+  doc._ytSetRawVisibility(false);
+  var blur = env.listeners.filter(function (l) { return l.type === 'blur' && l.target === 'window'; });
+  check(blur.length === 1, 'window blur is watched');
+  var fieldBlur = { type: 'blur', target: { nodeType: 1 }, stopped: false, stopImmediatePropagation: function () { this.stopped = true; } };
+  blur[0].fn(fieldBlur);
+  check(fieldBlur.stopped === false, 'a text field blur is not treated as backgrounding');
+  YP.setAppActive(true);
 
   var video = new win.HTMLMediaElement();
   video.pause();
@@ -405,6 +620,188 @@ async function main() {
   video.pause();
   check(video.pauses === 2, 'pause allowed when background play is off');
   YP.setAppActive(true);
+  YP.applySettings({ backgroundPlay: true });
+  var playing = new win.HTMLMediaElement();
+  playing.play();
+  playing.paused = true;
+  var playsBeforeBackground = playing.plays;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [playing] : []; };
+  YP.setAppActive(false);
+  check(playing.plays === playsBeforeBackground + 1, 'background resumes a video the user had not paused');
+  check(playing.pauses === undefined || playing.pauses === 0, 'the resume path does not pause');
+  playing.pause();
+  check(playing.pauses == null, 'pause during backgrounding is ignored');
+  YP.setAppActive(true);
+  var userPaused = new win.HTMLMediaElement();
+  userPaused.play();
+  var userTouch = env.listeners.filter(function (l) { return l.type === 'touchend'; }).pop();
+  check(!!userTouch, 'touchend is watched for user pause');
+  userTouch.fn({});
+  userPaused.pause();
+  check(userPaused.__ytplusExplicitPause === true, 'a tapped pause is explicit');
+  userPaused.paused = true;
+  var pausedPlays = userPaused.plays;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [userPaused] : []; };
+  YP.setAppActive(false);
+  check(userPaused.plays === pausedPlays, 'a video the user paused stays paused in the background');
+  YP.setAppActive(true);
+  var foreground = new win.HTMLMediaElement();
+  foreground.paused = false;
+  foreground.currentTime = 8;
+  foreground.duration = 200;
+  var foregroundPlays = foreground.plays || 0;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [foreground] : []; };
+  vis[0].fn({ stopped: false, type: 'visibilitychange', stopImmediatePropagation: function () { this.stopped = true; } });
+  YP.publishNowPlaying(foreground, true);
+  check((foreground.plays || 0) === foregroundPlays, 'foreground now-playing does not call play');
+  check(foreground.currentTime === 8, 'foreground now-playing does not seek');
+  foreground.pause();
+  check(foreground.pauses === 1, 'foreground pause still reaches the video');
+  doc._ytSetRawVisibility(true);
+  var locked = new win.HTMLMediaElement();
+  locked.play();
+  var lockedPlays = locked.plays;
+  // Wait out the 200ms gesture window from the tapped pause above.
+  var gestureWait = Date.now() + 250;
+  while (Date.now() < gestureWait) { /* spin */ }
+  locked.pause();
+  check(locked.pauses == null, 'a pause while the page is hidden is not delivered');
+  check(locked.__ytplusUserPaused !== true, 'a hidden-page pause is not a user pause');
+  locked.paused = true;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [locked] : []; };
+  YP.holdForBackground(true);
+  check(locked.plays === lockedPlays + 1, 'background hold resumes a video the user had not paused');
+  YP.setAppActive(true);
+  doc._ytSetRawVisibility(false);
+  var stalled = new win.HTMLMediaElement();
+  stalled.play();
+  stalled.paused = true;
+  stalled.readyState = 2;
+  stalled.__ytplusWaiting = true;
+  stalled.currentTime = 12;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [stalled] : []; };
+  var stalledPlays = stalled.plays;
+  check(YP.recoverIfStalled() === 1, 'returning to the app resumes a paused video');
+  check(stalled.plays === stalledPlays + 1, 'the nudge calls play');
+  check(stalled.currentTime === 12, 'the nudge does not seek');
+  stalled.paused = false;
+  stalled.readyState = 2;
+  stalled.__ytplusWaiting = true;
+  var settled = stalled.plays;
+  var settledTime = stalled.currentTime;
+  check(YP.recoverIfStalled() === 0, 'a playing video is not nudged');
+  check(stalled.plays === settled, 'foreground playback is not restarted');
+  check(stalled.currentTime === settledTime, 'a playing return does not seek');
+  stalled.pause();
+  stalled.readyState = 1;
+  stalled.__ytplusWaiting = true;
+  check(YP.recoverIfStalled() === 0, 'a user pause is not resumed on return');
+  var pageHides = 0;
+  doc.addEventListener('pagehide', function () { pageHides++; });
+  var pageHide = env.listeners.filter(function (l) { return l.type === 'pagehide'; }).pop();
+  check(!!pageHide, 'pagehide listener is wrapped');
+  YP.setAppActive(false);
+  pageHide.fn({});
+  check(pageHides === 0, 'pagehide listeners are dropped while backgrounded');
+  YP.setAppActive(true);
+  pageHide.fn({});
+  check(pageHides === 1, 'pagehide listeners run in the foreground');
+
+  var cycle = new win.HTMLMediaElement();
+  cycle.playbackRate = 1;
+  cycle.currentTime = 4;
+  cycle.play();
+  cycle.paused = false;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [cycle] : []; };
+  var touch = env.listeners.filter(function (l) { return l.type === 'touchend'; }).pop();
+  check(!!touch, 'taps are observed');
+  doc._ytSetRawVisibility(true);
+  touch.fn({});
+  cycle.pause();
+  check(cycle.pauses === 1, 'a foreground tap pause is delivered');
+  check(cycle.__ytplusUserPaused === true, 'a foreground tap pause is the user');
+  cycle.paused = true;
+  var cyclePlays = cycle.plays;
+  YP.setAppActive(false);
+  check(cycle.plays === cyclePlays, 'background stays paused after a foreground pause');
+  YP.setAppActive(true);
+  check(YP.holdForBackground() === false, 'a leftover background retry is ignored');
+  check(cycle.plays === cyclePlays, 'a leftover retry does not call play');
+  check(cycle.__ytplusUserPaused === true, 'the user pause survives the leftover retry');
+  cycle.play();
+  cycle.paused = true;
+  cycle.playbackRate = 1;
+  var beforeLeave = cycle.plays;
+  YP.setAppActive(false);
+  check(cycle.plays === beforeLeave + 1, 'leaving again resumes a video that is playing');
+  var bgPlays = cycle.plays;
+  var bgPauses = cycle.pauses || 0;
+  check(YP.remoteCommand('pause') === true, 'lock screen pause while backgrounded');
+  check(cycle.__ytplusUserPaused === true, 'lock screen pause is user intent');
+  check(cycle.playbackRate === 0, 'lock screen pause parks the rate instead of pause()');
+  check((cycle.pauses || 0) === bgPauses, 'lock screen pause does not call pause()');
+  check(YP.publishNowPlaying(cycle, true).rate === 0, 'now playing rate is 0 while parked');
+  check(YP.remoteCommand('skip', 10) === true, 'lock screen skip while paused');
+  check(cycle.currentTime === 14, 'skip moves ten seconds');
+  check(cycle.playbackRate === 0, 'skip leaves a lock-screen pause parked');
+  check(YP.remoteCommand('play') === true, 'lock screen play while backgrounded');
+  check(cycle.__ytplusUserPaused === false, 'lock screen play clears the user pause');
+  check(cycle.playbackRate === 1, 'lock screen play restores the rate');
+  check(cycle.plays === bgPlays + 1, 'lock screen play calls play() when the element is paused');
+  cycle.paused = false;
+  cycle.playbackRate = 1;
+  cycle.currentTime = 20;
+  cycle.readyState = 2;
+  cycle.__ytplusWaiting = true;
+  var returnPlays = cycle.plays;
+  var returnTime = cycle.currentTime;
+  YP.setAppActive(true);
+  check(cycle.plays === returnPlays, 'returning after lock-screen play does not call play');
+  check(cycle.currentTime === returnTime, 'returning after lock-screen play does not seek');
+  check(YP.recoverIfStalled() === 0, 'playing after lock-screen is not recovered');
+  check(cycle.pauses == null || cycle.pauses === bgPauses, 'returning after lock-screen does not pause');
+
+  // WebKit pause can race ahead of willResignActive. It must not stick as a
+  // user pause, or Home/app-switch audio stops.
+  var raced = new win.HTMLMediaElement();
+  raced.play();
+  raced.paused = false;
+  raced.playbackRate = 1;
+  raced.currentTime = 9;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [raced] : []; };
+  doc._ytSetRawVisibility(false);
+  var raceWait = Date.now() + 250;
+  while (Date.now() < raceWait) { /* spin past any prior tap window */ }
+  raced.pause();
+  check(raced.pauses === 1, 'a foreground race pause is delivered before hold');
+  check(raced.__ytplusUserPaused === true, 'race pause marks userPaused temporarily');
+  check(raced.__ytplusExplicitPause !== true, 'race pause is not an explicit user pause');
+  raced.paused = true;
+  var racedPlays = raced.plays;
+  check(YP.holdForBackground(true, 99) === true, 'hold after a raced pause');
+  check(raced.__ytplusUserPaused !== true, 'hold clears a non-explicit race pause');
+  check(raced.plays === racedPlays + 1, 'hold resumes after a raced system pause');
+  YP.setAppActive(true);
+
+  var parked = new win.HTMLMediaElement();
+  parked.play();
+  parked.paused = false;
+  parked.playbackRate = 1;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [parked] : []; };
+  YP.setAppActive(false);
+  YP.remoteCommand('pause');
+  check(parked.playbackRate === 0, 'lock-screen park before return');
+  check(parked.__ytplusExplicitPause === true, 'lock-screen park is explicit');
+  var parkedPlays = parked.plays || 0;
+  var parkedTime = parked.currentTime;
+  YP.setAppActive(true);
+  check(parked.playbackRate === 0, 'returning leaves an explicit lock-screen pause parked');
+  check((parked.plays || 0) === parkedPlays, 'returning does not play an explicit lock-screen pause');
+  check(parked.currentTime === parkedTime, 'returning does not seek an explicit lock-screen pause');
+  check(YP.recoverIfStalled() === 0, 'recover skips a parked lock-screen pause');
+
+  doc._ytSetRawVisibility(false);
+  doc.querySelectorAll = function () { return []; };
   reset(YP);
 
   var clicks = [];
@@ -469,6 +866,85 @@ async function main() {
   check(JSON.stringify(cleanedFat).indexOf("Don't recommend channel") !== -1, 'fat feed keeps the channel item');
   check(win.__fetchURLs.length === beforeFetches, 'DeArrow stays quiet when it is off');
 
+  var history = {
+    contents: [{ searchSuggestionsSectionRenderer: { contents: [
+      { searchSuggestionRenderer: {
+        suggestion: { runs: [{ text: 'old search' }] },
+        icon: { iconType: 'HISTORY' },
+        serviceEndpoint: { feedbackEndpoint: { feedbackToken: 'TOK1' } }
+      } },
+      { searchSuggestionRenderer: {
+        suggestion: { runs: [{ text: 'Keep Me' }] },
+        icon: { iconType: 'HISTORY' },
+        serviceEndpoint: { feedbackEndpoint: { feedbackToken: 'TOK2' } }
+      } }
+    ] } }]
+  };
+  var shown = YP.process(JSON.parse(JSON.stringify(history)));
+  check(JSON.stringify(shown).indexOf('old search') !== -1, 'search history is visible at first');
+  check(YP.rememberSearchRemoval('Old Search') === true, 'removal is stored');
+  var hidden = YP.process(JSON.parse(JSON.stringify(history)));
+  check(JSON.stringify(hidden).indexOf('old search') === -1, 'removed search stays out of the next response');
+  check(JSON.stringify(hidden).indexOf('Keep Me') !== -1, 'a search that was not removed stays');
+  var again = YP.process(JSON.parse(JSON.stringify(history)));
+  check(JSON.stringify(again).indexOf('old search') === -1, 'removal is still in effect after leaving search');
+  var search = searchFixture();
+  var fetchesBefore = win.__fetchURLs.length;
+  check(YP.handleSearchClick(search.remove) === true, 'tapping Remove records the row');
+  check(search.row.style.display === 'none', 'the removed row is hidden');
+  check(YP.blockedSearches().indexOf('cats') !== -1, 'the row is on the blocklist');
+  check(win.__fetchURLs.slice(fetchesBefore).some(function (u) { return u.indexOf('/youtubei/v1/feedback') !== -1; }), 'Remove also calls the feedback endpoint');
+  check(typeof YP.mountClearSearch !== 'function' && typeof YP.requestClearSearchHistory !== 'function', 'clear-all controls are not exported');
+  YP.paintSearch(search.doc);
+  check(search.list.style.backgroundColor === '#0f0f0f', 'suggestion list background');
+  check(search.list.style.color === '#f1f1f1', 'suggestion list text');
+  check(search.row.style.color === '#f1f1f1', 'suggestion row text');
+
+  doc.querySelector = function (sel) {
+    if (sel.indexOf('og:title') !== -1) return { getAttribute: function (k) { return k === 'content' ? 'Middle Ages' : null; } };
+    if (sel.indexOf('owner') !== -1 || sel.indexOf('channel') !== -1) return { textContent: 'Sleepless Historian' };
+    if (sel.indexOf('og:image') !== -1) return { getAttribute: function () { return 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg'; } };
+    return null;
+  };
+  var media = new win.HTMLMediaElement();
+  media.duration = 200;
+  media.currentTime = 40;
+  media.paused = false;
+  media.playbackRate = 1;
+  media.currentSrc = 'https://example.com/a.mp4';
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [media] : []; };
+  var info = YP.publishNowPlaying(media, true);
+  check(info.title === 'Middle Ages', 'now playing title');
+  check(info.author === 'Sleepless Historian', 'now playing channel');
+  check(info.artwork.indexOf('i.ytimg.com') !== -1, 'now playing artwork');
+  check(info.duration === 200 && info.elapsed === 40 && info.rate === 1, 'now playing times');
+  check(YP.publishNowPlaying(media, false) === null, 'timeupdate is throttled');
+  media.currentSrc = 'https://example.com/b.mp4';
+  var changed = YP.publishNowPlaying(media, false);
+  check(changed && changed.duration === 200, 'a new video updates now playing immediately');
+  check(YP.remoteCommand('skip', 5) === true, 'a 5 second skip request is accepted');
+  check(media.currentTime === 50, 'skip is 10 seconds even if the event says 5');
+  check(YP.remoteCommand('skip', -5) === true, 'a 5 second skip back is accepted');
+  check(media.currentTime === 40, 'skip back is 10 seconds even if the event says 5');
+  check(YP.remoteCommand('skip', 10) === true, 'skip forward');
+  check(media.currentTime === 50, 'skip forward is 10 seconds');
+  check(YP.remoteCommand('skip', 10) === false, 'a duplicate remote command is ignored');
+  check(media.currentTime === 50, 'duplicate skip does not move twice');
+  check(YP.remoteCommand('skip', -10) === true, 'skip back');
+  check(media.currentTime === 40, 'skip back is 10 seconds');
+  check(YP.remoteCommand('seek', 12) === true, 'scrub');
+  check(media.currentTime === 12, 'scrub position');
+  check(YP.remoteCommand('pause') === true, 'lock screen pause');
+  check(media.__ytplusUserPaused === true, 'lock screen pause counts as the user');
+  var plays = media.plays || 0;
+  YP.setAppActive(false);
+  check((media.plays || 0) === plays, 'backgrounding does not resume after a lock screen pause');
+  check(YP.remoteCommand('play') === true, 'lock screen play');
+  check(media.__ytplusUserPaused === false, 'lock screen play clears the pause');
+  YP.setAppActive(true);
+  doc.querySelector = function () { return null; };
+  doc.querySelectorAll = function () { return []; };
+
   var rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
   var blob = JSON.stringify(rules);
   check(Array.isArray(rules) && rules.length >= 6, 'content rules list');
@@ -491,7 +967,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.0.2', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.6', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -501,10 +977,52 @@ async function main() {
   var xcconfig = fs.readFileSync(path.join(root, 'platforms', 'ios', 'Config', 'YouTubePlus.xcconfig'), 'utf8');
   check(settingsSwift.indexOf('DeArrow replaces clickbait titles and thumbnails with community-submitted, more accurate ones.') !== -1, 'dearrow explanation');
   check(settingsSwift.indexOf('YouTube + Settings') !== -1, 'settings title');
+  check(settingsSwift.indexOf('YouTubeToggleStyle') !== -1, 'custom switch style');
+  check(settingsSwift.indexOf('.tint(.white)') === -1, 'switches are not tinted white');
+  check(settingsSwift.indexOf('#717171') !== -1, 'off track');
+  check(settingsSwift.indexOf('#f1f1f1') !== -1, 'on track');
+  check(settingsSwift.indexOf('#0f0f0f') !== -1, 'dark knob');
+  check(settingsSwift.indexOf('trackWidth: CGFloat = 48') !== -1, 'thick track');
+  check(settingsSwift.indexOf('knobSize: CGFloat = 22') !== -1, 'knob sits inside the track');
+  check(settingsSwift.indexOf('.shadow') === -1, 'switch has no shadow');
+  check(settingsSwift.indexOf('.toggleStyle(YouTubeToggleStyle())') !== -1, 'style applies to every toggle');
+  check(settingsSwift.indexOf('#available(iOS 17, *)') !== -1, 'isToggle is gated to iOS 17');
+  check(settingsSwift.indexOf('accessibilityValue(isOn ? "On" : "Off")') !== -1, 'switch value is announced on iOS 16');
   check(settingsSwift.indexOf('TizenTube') === -1, 'settings do not name TizenTube');
   check(contentSwift.indexOf('Welcome to YouTube +') !== -1, 'welcome toast');
   check(contentSwift.indexOf('TizenTube') === -1, 'main UI does not name TizenTube');
   check(infoPlist.indexOf('UIBackgroundModes') !== -1 && infoPlist.indexOf('audio') !== -1, 'background audio mode');
+  var playbackSwift = fs.readFileSync(path.join(swiftDir, 'PlaybackSession.swift'), 'utf8');
+  check(playbackSwift.indexOf('setCategory(.playback') !== -1, 'playback category');
+  check(playbackSwift.indexOf('setActive(true)') !== -1, 'audio session activates');
+  check(playbackSwift.indexOf('didActivate') !== -1, 'audio session is not activated on every tick');
+  var updateFn = playbackSwift.split('static func update')[1].split('private static func number')[0];
+  check(updateFn.indexOf('configure()') === -1 && updateFn.indexOf('setActive') === -1, 'now playing updates do not reactivate audio');
+  check(playbackSwift.indexOf('skipBackwardCommand') !== -1 && playbackSwift.indexOf('preferredIntervals = [10]') !== -1, 'skip back 10');
+  check(playbackSwift.indexOf('run("skip", 10)') !== -1, 'native skip forward is always 10 seconds');
+  check(playbackSwift.indexOf('run("skip", -10)') !== -1, 'native skip back is always 10 seconds');
+  check(playbackSwift.indexOf('skipForwardCommand') !== -1, 'skip forward');
+  check(playbackSwift.indexOf('nextTrackCommand.isEnabled = false') !== -1, 'next track hidden');
+  check(playbackSwift.indexOf('previousTrackCommand.isEnabled = false') !== -1, 'previous track hidden');
+  check(playbackSwift.indexOf('changePlaybackPositionCommand') !== -1, 'scrub command');
+  check(playbackSwift.indexOf('MPNowPlayingInfoCenter') !== -1, 'now playing info');
+  check(playbackSwift.indexOf('setAllMediaPlaybackSuspended(false') !== -1, 'background does not suspend media');
+  check(webViewSwift.indexOf('allowsInlineMediaPlayback = true') !== -1, 'inline playback');
+  check(webViewSwift.indexOf('mediaTypesRequiringUserActionForPlayback = []') !== -1, 'playback without a fresh tap');
+  check(contentSwift.indexOf('keepAlive()') !== -1, 'background keeps the audio session');
+  check(playbackSwift.indexOf('beginBackgroundTask') !== -1, 'background task keeps the process alive');
+  check(playbackSwift.indexOf('holdGeneration') !== -1, 'foreground cancels background retries');
+  check(playbackSwift.indexOf('cancelNudges') !== -1, 'pending resume timers are cancelled');
+  check(playbackSwift.indexOf('holdForBackground') !== -1, 'page is asked to resume');
+  check(playbackSwift.indexOf('nudgeNow') !== -1, 'first background hold is fired immediately');
+  check(playbackSwift.indexOf('prepareForForeground') !== -1, 'willEnterForeground only cancels holds');
+  check(playbackSwift.indexOf('willResignActiveNotification') !== -1, 'willResignActive starts the hold early');
+  check(playbackSwift.indexOf('willEnterForegroundNotification') !== -1, 'willEnterForeground is observed');
+  check(playbackSwift.indexOf('didBecomeActiveNotification') !== -1, 'didBecomeActive marks the page active');
+  check(contentSwift.indexOf('session.setAppActive(true)') === -1, 'ContentView does not double-set app active');
+  check(contentSwift.indexOf('PlaybackSession.returnToForeground()') !== -1, 'ContentView returns through PlaybackSession');
+  check(webViewSwift.indexOf('forMainFrameOnly: false') !== -1, 'lifecycle script starts in every frame');
+  check(webViewSwift.indexOf('forMainFrameOnly: true') === -1, 'document-start hook is not main-frame only');
   check(infoPlist.indexOf('youtubeplus') !== -1, 'custom URL scheme');
   check(infoPlist.indexOf('Edge Software Labs LLC') !== -1, 'copyright');
   check(xcconfig.indexOf('com.edgesoftwarelabs.youtubeplus') !== -1, 'bundle id');

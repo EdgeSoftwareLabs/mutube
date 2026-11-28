@@ -72,6 +72,7 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.surface)
+            .toggleStyle(YouTubeToggleStyle())
             .navigationTitle("YouTube + Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -81,6 +82,82 @@ struct SettingsView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .tint(.white)
+    }
+}
+
+/// The newer YouTube/Google pill: a 48×26 track with the knob inside it.
+/// Off is a #717171 track and a #0f0f0f knob on the left. On is an #f1f1f1
+/// track and the same dark knob on the right. A 2pt gap leaves a ring of
+/// track color around the knob. No shadow and no border.
+struct YouTubeToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            configuration.label
+                .foregroundColor(Color(red: 0.945, green: 0.945, blue: 0.945))
+            Spacer(minLength: 12)
+            YouTubeSwitch(isOn: configuration.isOn)
+        }
+        .contentShape(Rectangle())
+        .opacity(isEnabled ? 1 : 0.45)
+        .onTapGesture {
+            guard isEnabled else { return }
+            withAnimation(.easeInOut(duration: 0.18)) {
+                configuration.isOn.toggle()
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .youtubeToggleAccessibility(isOn: configuration.isOn)
+    }
+}
+
+/// `.isToggle` is iOS 17. The deployment target stays 16, and the On/Off
+/// value is announced on both.
+private extension View {
+    @ViewBuilder
+    func youtubeToggleAccessibility(isOn: Bool) -> some View {
+        if #available(iOS 17, *) {
+            self.accessibilityAddTraits(.isToggle)
+                .accessibilityValue(isOn ? "On" : "Off")
+        } else {
+            self.accessibilityValue(isOn ? "On" : "Off")
+        }
+    }
+}
+
+private struct YouTubeSwitch: View {
+    var isOn: Bool
+
+    // Points. Track is about 2:1. Knob diameter is the track height minus 4,
+    // so a 2pt margin shows the track color all the way around the knob.
+    private let trackWidth: CGFloat = 48
+    private let trackHeight: CGFloat = 26
+    private let knobSize: CGFloat = 22
+    private let inset: CGFloat = 2
+
+    private var trackColor: Color {
+        isOn
+            ? Color(red: 241.0 / 255.0, green: 241.0 / 255.0, blue: 241.0 / 255.0) // #f1f1f1
+            : Color(red: 113.0 / 255.0, green: 113.0 / 255.0, blue: 113.0 / 255.0) // #717171
+    }
+
+    private var knobColor: Color {
+        Color(red: 15.0 / 255.0, green: 15.0 / 255.0, blue: 15.0 / 255.0) // #0f0f0f
+    }
+
+    var body: some View {
+        let travel = (trackWidth - knobSize) / 2 - inset
+        ZStack {
+            Capsule()
+                .fill(trackColor)
+                .frame(width: trackWidth, height: trackHeight)
+            Circle()
+                .fill(knobColor)
+                .frame(width: knobSize, height: knobSize)
+                .offset(x: isOn ? travel : -travel)
+        }
+        .frame(width: trackWidth, height: trackHeight)
+        .animation(.easeInOut(duration: 0.2), value: isOn)
     }
 }

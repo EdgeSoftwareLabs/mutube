@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.0.2';
+  var VERSION = '1.1.6';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -140,8 +140,18 @@
     shortsRemoved: 0,
     titlesReplaced: 0,
     sponsorSkips: 0,
-    pauseBlocked: 0
+    pauseBlocked: 0,
+    searchHidden: 0
   };
+
+  var backgrounding = false;
+  var blockSet = null;
+  var recentHistory = [];
+  var lastNow = 0;
+  var lastNowKey = '';
+  var lastCmd = '';
+  var lastCmdAt = 0;
+  var origMediaPause = null;
 
   // Leaf metadata. Walking these on every Home / Subscriptions / Shorts / You
   // response blocks the main thread before YouTube can request i.ytimg.com.
@@ -196,6 +206,10 @@
 
   function lsGet(key) {
     try { return W.localStorage ? W.localStorage.getItem('ytplus.' + key) : null; } catch (e) { return null; }
+  }
+
+  function lsSet(key, value) {
+    try { if (W.localStorage) W.localStorage.setItem('ytplus.' + key, String(value)); } catch (e) { /* ignore */ }
   }
 
   function applyOverrides(o) {
@@ -385,9 +399,25 @@
     return CFG.adBlock || CFG.hideShorts || CFG.deArrow;
   }
 
+  function hasSuggestionShape(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 5) return false;
+    if (node.searchSuggestionsSectionRenderer || node.searchSuggestionRenderer || node.searchboxSuggestionRenderer) return true;
+    if (isArray(node)) return node.length > 0 && hasSuggestionShape(node[0], depth + 1);
+    var keys = ['contents', 'items', 'contentsArray'];
+    var i;
+    for (i = 0; i < keys.length; i++) {
+      if (node[keys[i]] && hasSuggestionShape(node[keys[i]], depth + 1)) return true;
+    }
+    return false;
+  }
+
   function process(data) {
     if (!isObj(data) || data[MARK]) return data;
-    if (!shouldProcess(data) || !featuresOn()) return data;
+    if (hasSuggestionShape(data, 0)) filterSearchPayload(data);
+    if (!shouldProcess(data) || !featuresOn()) {
+      if (hasSuggestionShape(data, 0)) mark(data);
+      return data;
+    }
     mark(data);
     stats.responses++;
     var beforeAds = stats.adsRemoved;
@@ -405,7 +435,7 @@
     function hooked(text, reviver) {
       var data = orig.call(W.JSON, text, reviver);
       try {
-        if (shouldProcess(data)) data = process(data);
+        if (shouldProcess(data) || hasSuggestionShape(data, 0)) data = process(data);
       } catch (err) {
         log('parse', err && err.message);
       }
@@ -741,42 +771,96 @@
     }).catch(function () { rydPending[id] = false; });
   }
 
+  var rawHidden = false;
+  var rawState = 'visible';
+  var realHiddenGet = null;
+  var acceptHold = true;
+  var retiredHold = 0;
+  var lastTouchAt = 0;
+
+  function pageReallyHidden() {
+    if (typeof realHiddenGet === 'function') {
+      try { return !!realHiddenGet.call(D); } catch (e) { /* use the stored flag */ }
+    }
+    return !!rawHidden;
+  }
+
+  function isLifecycleEvent(type) {
+    return type === 'visibilitychange' || type === 'webkitvisibilitychange' ||
+      type === 'pagehide' || type === 'freeze';
+  }
+
   function installVisibilityShim() {
     if (!D || D.__ytplusVis) return;
     D.__ytplusVis = true;
-    var rawHidden = false;
-    var rawState = 'visible';
+    try {
+      var proto = W.Document && W.Document.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'hidden');
+      if (desc && typeof desc.get === 'function') realHiddenGet = desc.get;
+    } catch (e) { /* the test document has no native hidden getter */ }
+    // Lie only while the app is actually backgrounded. In the foreground YouTube
+    // must see the real flag, or its player stalls.
+    var pretendVisible = function () { return CFG.backgroundPlay && !appActive; };
     try {
       Object.defineProperty(D, 'hidden', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? false : rawHidden; },
+        get: function () { return pretendVisible() ? false : (pageReallyHidden() || rawHidden); },
         set: function (v) { rawHidden = !!v; }
       });
       Object.defineProperty(D, 'visibilityState', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? 'visible' : rawState; },
+        get: function () { return pretendVisible() ? 'visible' : (rawState || (pageReallyHidden() ? 'hidden' : 'visible')); },
         set: function (v) { rawState = String(v || ''); }
       });
       Object.defineProperty(D, 'webkitHidden', {
         configurable: true,
-        get: function () { return CFG.backgroundPlay ? false : rawHidden; }
+        get: function () { return pretendVisible() ? false : (pageReallyHidden() || rawHidden); }
       });
-    } catch (e) { /* a locked document keeps its native getters */ }
+    } catch (e2) { /* a locked document keeps its native getters */ }
     D._ytSetRawVisibility = function (hidden) {
       rawHidden = !!hidden;
       rawState = hidden ? 'hidden' : 'visible';
     };
-    function block(ev) {
-      if (!CFG.backgroundPlay || !ev) return;
+    wrapLifecycleListeners(W);
+    wrapLifecycleListeners(D);
+    function onHiddenEvent(ev) {
+      if (!CFG.backgroundPlay || !ev || appActive) return;
+      if (ev.type === 'blur' && ev.target !== W && ev.target !== D) return;
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       else if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      resumeWanted();
     }
-    var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze'];
+    onHiddenEvent.__ytplusInternal = true;
+    function noteTouch() { lastTouchAt = Date.now(); }
+    noteTouch.__ytplusInternal = true;
+    if (D.addEventListener) {
+      D.addEventListener('touchend', noteTouch, true);
+      D.addEventListener('pointerup', noteTouch, true);
+      D.addEventListener('click', noteTouch, true);
+    }
+    var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze', 'blur'];
     var i;
     for (i = 0; i < events.length; i++) {
-      if (W.addEventListener) W.addEventListener(events[i], block, true);
-      if (D.addEventListener) D.addEventListener(events[i], block, true);
+      if (W.addEventListener) W.addEventListener(events[i], onHiddenEvent, true);
+      if (D.addEventListener) D.addEventListener(events[i], onHiddenEvent, true);
     }
+  }
+
+  function wrapLifecycleListeners(target) {
+    if (!target || target.__ytplusAdd || typeof target.addEventListener !== 'function') return;
+    var orig = target.addEventListener;
+    target.__ytplusAdd = true;
+    target.addEventListener = function (type, fn, capture) {
+      if (isLifecycleEvent(type) && typeof fn === 'function' && !fn.__ytplusInternal) {
+        var wrapped = function (ev) {
+          if (CFG.backgroundPlay && !appActive) return;
+          return fn.apply(this, arguments);
+        };
+        wrapped.__ytplusWrapped = true;
+        return orig.call(this, type, wrapped, capture);
+      }
+      return orig.call(this, type, fn, capture);
+    };
   }
 
   function installPauseGuard() {
@@ -784,39 +868,209 @@
     if (typeof Ctor === 'undefined' || !Ctor.prototype || Ctor.prototype.__ytplusPause) return;
     var origPause = Ctor.prototype.pause;
     var origPlay = Ctor.prototype.play;
+    origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      if (CFG.backgroundPlay && !appActive) {
+      // Background / resign first: never treat WebKit's Home/lock pause as the user.
+      if (CFG.backgroundPlay && (backgrounding || !appActive)) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
       }
-      this.__ytplusWantsPlay = false;
+      // A tap in the foreground is the user, including when WebKit still
+      // reports the page hidden for a moment after we come back.
+      if (recentUserGesture() && appActive && !backgrounding) {
+        markExplicitPause(this);
+        if (typeof origPause === 'function') return origPause.apply(this, arguments);
+        return;
+      }
+      if (CFG.backgroundPlay && pageReallyHidden()) {
+        stats.pauseBlocked++;
+        log('blocked pause');
+        return;
+      }
+      // Foreground programmatic pause. Deliver it, but do not mark explicit —
+      // a Home/lock pause that races ahead of willResignActive must still be
+      // clearable by holdForBackground.
+      markUserPause(this);
       if (typeof origPause === 'function') return origPause.apply(this, arguments);
     };
     Ctor.prototype.play = function () {
+      this.__ytplusUserPaused = false;
+      this.__ytplusExplicitPause = false;
       this.__ytplusWantsPlay = true;
       if (typeof origPlay === 'function') return origPlay.apply(this, arguments);
     };
   }
 
-  function resumeMedia() {
-    if (!CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
+  function recentUserGesture() {
+    // Only a tap in the same moment as pause(). An older touch (watching,
+    // then leaving the app) must not turn WebKit's background pause into
+    // a user pause, or audio stops when the app resigns active.
+    return !!lastTouchAt && (Date.now() - lastTouchAt) < 200;
+  }
+
+  function cancelRecover() {
+    if (W.__ytplusRecover && typeof W.clearTimeout === 'function') W.clearTimeout(W.__ytplusRecover);
+    W.__ytplusRecover = null;
+  }
+
+  function markUserPause(video) {
+    if (!video) return;
+    video.__ytplusUserPaused = true;
+    video.__ytplusWantsPlay = false;
+    cancelRecover();
+  }
+
+  function markExplicitPause(video) {
+    if (!video) return;
+    video.__ytplusExplicitPause = true;
+    markUserPause(video);
+  }
+
+  function userPause(video) {
+    markExplicitPause(video);
+    if (typeof origMediaPause === 'function') origMediaPause.call(video);
+  }
+
+  function freezeForBackground(video) {
+    // pause() from a locked screen is ignored by WebKit on the way back to
+    // play(). Leaving the element playing and parking playbackRate at 0 keeps
+    // the media session allowed, so lock-screen play can set the rate to 1.
+    if (!video) return;
+    markExplicitPause(video);
+    var rate = Number(video.playbackRate);
+    if (isFinite(rate) && rate > 0) video.__ytplusSavedRate = rate;
+    if (!video.__ytplusSavedRate) video.__ytplusSavedRate = 1;
+    try { video.playbackRate = 0; } catch (e) { /* ignore */ }
+    publishNowPlaying(video, true);
+  }
+
+  function releaseForPlayback(video) {
+    if (!video) return;
+    video.__ytplusUserPaused = false;
+    video.__ytplusExplicitPause = false;
+    video.__ytplusWantsPlay = true;
+    var rate = Number(video.__ytplusSavedRate);
+    if (!isFinite(rate) || rate <= 0) rate = 1;
+    try { video.playbackRate = rate; } catch (e) { /* ignore */ }
+    if (video.paused && typeof video.play === 'function') {
+      try { video.play(); } catch (e2) { /* ignore */ }
+    }
+    publishNowPlaying(video, true);
+  }
+
+  function clearSystemPauseMarks() {
+    // WebKit often pauses before Swift's hold JS lands. That race must not
+    // permanently look like a user pause, or Home/app-switch audio dies.
+    if (!D || typeof D.querySelectorAll !== 'function') return;
     var videos = D.querySelectorAll('video');
-    var i;
+    var i, v;
     for (i = 0; i < videos.length; i++) {
-      var v = videos[i];
-      if (v && v.__ytplusWantsPlay && typeof v.play === 'function') {
+      v = videos[i];
+      if (!v || v.__ytplusExplicitPause) continue;
+      if (!v.__ytplusUserPaused) continue;
+      v.__ytplusUserPaused = false;
+      v.__ytplusWantsPlay = true;
+    }
+  }
+
+  function resumeWanted() {
+    if (appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
+    var videos = D.querySelectorAll('video');
+    var i, v;
+    for (i = 0; i < videos.length; i++) {
+      v = videos[i];
+      if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
+      if (Number(v.playbackRate) === 0) continue;
+      if (v.paused === false) continue;
+      if (typeof v.play === 'function') {
         try { v.play(); } catch (e) { /* ignore */ }
       }
     }
   }
 
-  function setAppActive(active) {
+  function holdForBackground(force, generation) {
+    // Retries pass force=false. After setAppActive(true) those are ignored.
+    // A generation from a hold we already retired (we came back) is ignored
+    // even if it was the forced first nudge.
+    if (typeof generation === 'number' && generation <= retiredHold) {
+      log('stale hold ignored');
+      return false;
+    }
+    if (!force && !acceptHold) {
+      log('stale hold ignored');
+      return false;
+    }
+    acceptHold = true;
+    // Flip flags before any resume work so a pause that arrives in this turn
+    // is blocked and not stored as a user pause.
+    appActive = false;
+    backgrounding = true;
+    if (!CFG.backgroundPlay) return false;
+    log('hold for background');
+    clearSystemPauseMarks();
+    resumeWanted();
+    var video = activeVideo();
+    if (video) publishNowPlaying(video, true);
+    return true;
+  }
+
+  function recoverIfStalled() {
+    // Only resume a video that is actually paused. Never seek — assigning
+    // currentTime on return forces a multi-second rebuffer.
+    if (!appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return 0;
+    var videos = D.querySelectorAll('video');
+    var n = 0;
+    var i, v;
+    for (i = 0; i < videos.length; i++) {
+      v = videos[i];
+      if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
+      if (Number(v.playbackRate) === 0) continue;
+      if (v.paused === false) continue;
+      log('recover paused video');
+      if (typeof v.play === 'function') {
+        try { v.play(); } catch (e2) { /* ignore */ }
+      }
+      n++;
+    }
+    return n;
+  }
+
+  function scheduleForegroundRecover() {
+    if (typeof W.setTimeout !== 'function') return;
+    if (W.__ytplusRecover) {
+      if (typeof W.clearTimeout === 'function') W.clearTimeout(W.__ytplusRecover);
+    }
+    W.__ytplusRecover = W.setTimeout(function () {
+      W.__ytplusRecover = null;
+      recoverIfStalled();
+    }, 1500);
+  }
+
+  function setAppActive(active, generation) {
     var was = appActive;
-    appActive = !!active;
-    if (was && !appActive) resumeMedia();
-    log('appActive', appActive);
+    if (!active) {
+      acceptHold = true;
+      holdForBackground(true, generation);
+      log('appActive', false);
+      return;
+    }
+    // Synchronous: a background retry that arrives after this returns must
+    // see the foreground and do nothing.
+    acceptHold = false;
+    if (typeof generation === 'number') retiredHold = generation;
+    appActive = true;
+    backgrounding = false;
+    // Only nudge if something is actually paused. A playing return (including
+    // after lock-screen controls) must not seek or call play().
+    if (!was) {
+      var video = activeVideo();
+      if (video && video.paused && !video.__ytplusUserPaused && video.__ytplusWantsPlay && Number(video.playbackRate) !== 0) {
+        scheduleForegroundRecover();
+      }
+    }
+    log('appActive', true);
   }
 
   function configureOne(video) {
@@ -830,6 +1084,18 @@
       video.playsInline = true;
       if ('disablePictureInPicture' in video) video.disablePictureInPicture = !CFG.pictureInPicture;
     } catch (e) { /* ignore */ }
+    if (video.addEventListener) {
+      var force = function () { publishNowPlaying(video, true); };
+      video.addEventListener('play', force);
+      video.addEventListener('playing', function () { video.__ytplusWaiting = false; publishNowPlaying(video, true); });
+      video.addEventListener('pause', force);
+      video.addEventListener('seeked', force);
+      video.addEventListener('loadedmetadata', force);
+      video.addEventListener('ratechange', force);
+      video.addEventListener('waiting', function () { video.__ytplusWaiting = true; });
+      video.addEventListener('stalled', function () { video.__ytplusWaiting = true; });
+      video.addEventListener('timeupdate', function () { publishNowPlaying(video, false); });
+    }
   }
 
   function maybeSkipAds(video) {
@@ -864,7 +1130,7 @@
     if (!existing) {
       var style = D.createElement('style');
       style.id = 'ytplus-style';
-      style.textContent = 'html,body{background:#0f0f0f!important;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}';
+      style.textContent = 'html{color-scheme:dark;}html,body{background:#0f0f0f!important;color:#f1f1f1;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}ytm-search,ytm-searchbox,.searchbox,.searchbox-input,ytm-search-suggestions,.suggestion-list,[role="listbox"],input[type="search"]{background:#0f0f0f!important;color:#f1f1f1!important;caret-color:#f1f1f1;}ytm-search-suggestion,[role="option"]{background:#0f0f0f!important;color:#f1f1f1!important;}';
       try { parent.appendChild(style); } catch (e2) { /* ignore */ }
     }
     var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
@@ -972,6 +1238,653 @@
     return n;
   }
 
+  function postToApp(payload) {
+    try {
+      if (W.webkit && W.webkit.messageHandlers && W.webkit.messageHandlers.ytplus) {
+        W.webkit.messageHandlers.ytplus.postMessage(payload);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  var SETTINGS_PAGE_LABELS = {
+    general: 1, account: 1, notifications: 1, privacy: 1, playback: 1,
+    'playback and performance': 1, 'connected apps': 1, advanced: 1,
+    'billing & payments': 1, 'billing and payments': 1,
+    'purchases and memberships': 1, autoplay: 1, downloads: 1,
+    'your data in youtube': 1, 'video quality preferences': 1,
+    'history & privacy': 1, 'history and privacy': 1
+  };
+  var ACCOUNT_MENU_LABELS = {
+    settings: 1, help: 1, 'send feedback': 1, 'sign out': 1, 'switch account': 1
+  };
+
+  function normLabel(s) {
+    return String(s || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').toLowerCase();
+  }
+
+  function elementChildren(el) {
+    var raw = el && el.children;
+    if (!raw || typeof raw.length !== 'number') return [];
+    var out = [];
+    var i;
+    for (i = 0; i < raw.length; i++) if (raw[i]) out.push(raw[i]);
+    return out;
+  }
+
+  function elementText(el) {
+    if (!el) return '';
+    if (typeof el.textContent === 'string' && el.textContent) return el.textContent;
+    var kids = elementChildren(el);
+    var i, parts = [];
+    for (i = 0; i < kids.length; i++) parts.push(elementText(kids[i]));
+    return parts.join(' ');
+  }
+
+  function walkElements(node, out) {
+    if (!node || node.nodeType === 3) return;
+    out.push(node);
+    var kids = elementChildren(node);
+    var i;
+    for (i = 0; i < kids.length; i++) walkElements(kids[i], out);
+  }
+
+  function matchesLabel(text, table) {
+    var n = normLabel(text);
+    if (!n) return false;
+    if (table[n]) return true;
+    var k;
+    for (k in table) {
+      if (!hasOwn(table, k)) continue;
+      if (n.indexOf(k) === 0 && (n.length === k.length || n.charAt(k.length) === ' ')) return true;
+    }
+    return false;
+  }
+
+  function listKind(el) {
+    var kids = elementChildren(el);
+    var page = 0;
+    var account = 0;
+    var i;
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-ytplus-settings')) continue;
+      if (matchesLabel(elementText(kids[i]), SETTINGS_PAGE_LABELS)) page++;
+      if (matchesLabel(elementText(kids[i]), ACCOUNT_MENU_LABELS)) account++;
+    }
+    if (page >= 2) return 'page';
+    if (account >= 2) return 'account';
+    return '';
+  }
+
+  function isChevron(el) {
+    if (!el) return false;
+    var tag = String(el.tagName || el.nodeName || '');
+    var blob = String(el.className || '');
+    if (el.getAttribute) blob += ' ' + String(el.getAttribute('class') || '') + ' ' + String(el.getAttribute('icon') || '');
+    if (/^svg$/i.test(tag)) return true;
+    return /chevron|arrow-right|yt-icon|iron-icon/i.test(blob + ' ' + tag);
+  }
+
+  function rowHasChevron(el) {
+    var all = [];
+    walkElements(el, all);
+    var i;
+    for (i = 0; i < all.length; i++) if (i > 0 && isChevron(all[i])) return true;
+    return false;
+  }
+
+  function isCategoryRow(el, kind) {
+    if (!el || (el.getAttribute && el.getAttribute('data-ytplus-settings') === '1')) return false;
+    var text = elementText(el);
+    if (kind === 'page') return matchesLabel(text, SETTINGS_PAGE_LABELS);
+    if (kind === 'account') return matchesLabel(text, ACCOUNT_MENU_LABELS);
+    return false;
+  }
+
+  function dropHrefs(el) {
+    if (!el) return;
+    if (el.removeAttribute && el.getAttribute && el.getAttribute('href') != null) el.removeAttribute('href');
+    var kids = elementChildren(el);
+    var i;
+    for (i = 0; i < kids.length; i++) dropHrefs(kids[i]);
+  }
+
+  function stripIds(el) {
+    if (!el) return;
+    if (el.removeAttribute) el.removeAttribute('id');
+    if (el.id && el.id !== 'ytplus-settings-row') el.id = '';
+    var kids = elementChildren(el);
+    var i;
+    for (i = 0; i < kids.length; i++) stripIds(kids[i]);
+  }
+
+  function replaceVisibleLabel(row) {
+    var leaves = [];
+    function collect(el) {
+      var ch = elementChildren(el);
+      if (!ch.length) { leaves.push(el); return; }
+      var n;
+      for (n = 0; n < ch.length; n++) collect(ch[n]);
+    }
+    collect(row);
+    var i, t;
+    for (i = 0; i < leaves.length; i++) {
+      if (isChevron(leaves[i])) continue;
+      t = leaves[i].textContent || '';
+      if (matchesLabel(t, SETTINGS_PAGE_LABELS) || matchesLabel(t, ACCOUNT_MENU_LABELS)) {
+        leaves[i].textContent = 'YouTube +';
+        return true;
+      }
+    }
+    var cn = row.childNodes;
+    if (cn) {
+      for (i = 0; i < cn.length; i++) {
+        if (cn[i].nodeType === 3 && (matchesLabel(cn[i].nodeValue, SETTINGS_PAGE_LABELS) || matchesLabel(cn[i].nodeValue, ACCOUNT_MENU_LABELS))) {
+          cn[i].nodeValue = 'YouTube +';
+          return true;
+        }
+      }
+    }
+    t = row.textContent || '';
+    if (!(matchesLabel(t, SETTINGS_PAGE_LABELS) || matchesLabel(t, ACCOUNT_MENU_LABELS))) return false;
+    var icons = [];
+    var kids = elementChildren(row);
+    for (i = 0; i < kids.length; i++) if (isChevron(kids[i])) icons.push(kids[i]);
+    row.textContent = 'YouTube +';
+    for (i = 0; i < icons.length; i++) {
+      var still = elementChildren(row);
+      var present = false;
+      var j;
+      for (j = 0; j < still.length; j++) if (still[j] === icons[i]) present = true;
+      if (!present && row.appendChild) row.appendChild(icons[i]);
+    }
+    return true;
+  }
+
+  function rowShowsLabel(row) {
+    var all = [];
+    walkElements(row, all);
+    var i, t = '';
+    for (i = 0; i < all.length; i++) {
+      if (!elementChildren(all[i]).length && all[i].textContent) t += ' ' + all[i].textContent;
+    }
+    return normLabel(t).indexOf('youtube +') !== -1;
+  }
+
+  function ensureChevron(row, doc) {
+    if (rowHasChevron(row) || !doc || typeof doc.createElement !== 'function') return;
+    var icon = doc.createElement('span');
+    icon.className = 'yt-icon chevron-right';
+    if (icon.setAttribute) {
+      icon.setAttribute('class', 'yt-icon chevron-right');
+      icon.setAttribute('aria-hidden', 'true');
+    }
+    if (typeof icon.innerHTML === 'string' || icon.innerHTML === '') {
+      icon.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path></svg>';
+    } else {
+      icon.textContent = '\u203A';
+    }
+    if (row.appendChild) row.appendChild(icon);
+  }
+
+  function openNativeSettings(ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    postToApp({ type: 'settings' });
+    return false;
+  }
+
+  function insertAfter(parent, node, after) {
+    var kids = elementChildren(parent);
+    var i, at = -1;
+    for (i = 0; i < kids.length; i++) if (kids[i] === after) at = i;
+    var next = at >= 0 ? kids[at + 1] : null;
+    if (next && parent.insertBefore) parent.insertBefore(node, next);
+    else if (parent.appendChild) parent.appendChild(node);
+  }
+
+  // One entry, cloned from a real category row so it keeps YouTube's padding,
+  // type, and chevron. It sits with those rows, above the page footer, and
+  // opens the native sheet. Re-inserted after SPA redraws.
+  function mountSettingsEntry(doc) {
+    doc = doc || D;
+    if (!doc || typeof doc.createElement !== 'function') return false;
+    var root = doc.body || doc.documentElement || doc;
+    var all = [];
+    walkElements(root, all);
+    var pages = [];
+    var accounts = [];
+    var i, kind;
+    for (i = 0; i < all.length; i++) {
+      kind = listKind(all[i]);
+      if (kind === 'page') pages.push(all[i]);
+      else if (kind === 'account') accounts.push(all[i]);
+    }
+    var host = pages[0] || accounts[0];
+    if (!host) return false;
+    kind = pages.length ? 'page' : 'account';
+    var kids = elementChildren(host);
+    var proto = null;
+    var lastCategory = null;
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-ytplus-settings') === '1') return true;
+      if (!isCategoryRow(kids[i], kind)) continue;
+      lastCategory = kids[i];
+      if (!proto || rowHasChevron(kids[i])) proto = kids[i];
+    }
+    if (!proto) return false;
+    var row = null;
+    if (typeof proto.cloneNode === 'function') {
+      try { row = proto.cloneNode(true); } catch (e) { row = null; }
+    }
+    if (!row) row = doc.createElement('button');
+    stripIds(row);
+    dropHrefs(row);
+    if (proto.className && !row.className) row.className = proto.className;
+    var copiedClass = proto.getAttribute && proto.getAttribute('class');
+    if (copiedClass && row.setAttribute && !(row.getAttribute && row.getAttribute('class'))) row.setAttribute('class', copiedClass);
+    replaceVisibleLabel(row);
+    if (!rowShowsLabel(row)) {
+      var span = doc.createElement('span');
+      span.className = 'compact-link-text';
+      span.textContent = 'YouTube +';
+      if (span.setAttribute) span.setAttribute('class', 'compact-link-text');
+      var first = elementChildren(row)[0];
+      if (first && row.insertBefore) row.insertBefore(span, first);
+      else if (row.appendChild) row.appendChild(span);
+    }
+    ensureChevron(row, doc);
+    if (row.setAttribute) {
+      row.setAttribute('data-ytplus-settings', '1');
+      row.setAttribute('aria-label', 'YouTube +');
+      row.setAttribute('role', 'button');
+    }
+    row.onclick = openNativeSettings;
+    if (row.addEventListener) row.addEventListener('click', openNativeSettings, true);
+    if (!row.className && !(row.getAttribute && row.getAttribute('class')) && row.style) {
+      row.style.cssText = 'display:flex;align-items:center;box-sizing:border-box;width:100%;min-height:48px;margin:0;padding:0 16px;border:0;background:transparent;color:#f1f1f1;font:400 16px Roboto,Arial,sans-serif;text-align:left;';
+    }
+    insertAfter(host, row, lastCategory);
+    return true;
+  }
+
+  function normQuery(s) {
+    return normLabel(s);
+  }
+
+  function loadBlock() {
+    if (blockSet) return blockSet;
+    blockSet = {};
+    try {
+      var raw = lsGet('searchBlock');
+      var list = raw ? JSON.parse(raw) : [];
+      var i;
+      if (isArray(list)) {
+        for (i = 0; i < list.length; i++) blockSet[normQuery(list[i])] = 1;
+      }
+    } catch (e) { blockSet = {}; }
+    return blockSet;
+  }
+
+  function rememberSearchRemoval(query) {
+    var n = normQuery(query);
+    if (!n || n === 'remove' || n === 'remove all') return false;
+    var set = loadBlock();
+    set[n] = 1;
+    var list = [];
+    var k;
+    for (k in set) if (hasOwn(set, k)) list.push(k);
+    lsSet('searchBlock', JSON.stringify(list));
+    return true;
+  }
+
+  function suggestionInner(node) {
+    if (!node || typeof node !== 'object' || isArray(node)) return null;
+    if (node.searchSuggestionRenderer) return node.searchSuggestionRenderer;
+    if (node.searchboxSuggestionRenderer) return node.searchboxSuggestionRenderer;
+    if (node.suggestion && (node.icon || node.serviceEndpoint || node.feedbackEndpoint)) return node;
+    return null;
+  }
+
+  function suggestionQuery(inner) {
+    if (!inner) return '';
+    var s = inner.suggestion;
+    if (typeof s === 'string') return s;
+    if (s && typeof s.simpleText === 'string') return s.simpleText;
+    if (s && s.runs && s.runs[0] && typeof s.runs[0].text === 'string') return s.runs[0].text;
+    if (typeof inner.query === 'string') return inner.query;
+    return '';
+  }
+
+  function suggestionToken(inner) {
+    if (!inner) return '';
+    var ep = inner.serviceEndpoint || inner.feedbackEndpoint || null;
+    if (ep && ep.innertubeCommand) ep = ep.innertubeCommand;
+    var fb = inner.feedbackEndpoint || (ep && (ep.feedbackEndpoint || null));
+    if (fb && typeof fb.feedbackToken === 'string') return fb.feedbackToken;
+    return '';
+  }
+
+  function rememberRecent(query, token) {
+    var n = normQuery(query);
+    if (!n) return;
+    var i;
+    for (i = 0; i < recentHistory.length; i++) {
+      if (recentHistory[i].query === n) {
+        if (token && !recentHistory[i].token) recentHistory[i].token = token;
+        return;
+      }
+    }
+    recentHistory.push({ query: n, token: token || '' });
+    if (recentHistory.length > 100) recentHistory.shift();
+  }
+
+  function filterSearchPayload(data) {
+    var blocked = loadBlock();
+    function walk(node, depth) {
+      if (!node || typeof node !== 'object' || depth > 14) return;
+      if (isArray(node)) {
+        var w = 0;
+        var i, inner, q, n;
+        for (i = 0; i < node.length; i++) {
+          inner = suggestionInner(node[i]);
+          if (inner) {
+            q = suggestionQuery(inner);
+            n = normQuery(q);
+            rememberRecent(q, suggestionToken(inner));
+            if (n && blocked[n]) {
+              stats.searchHidden++;
+              continue;
+            }
+          }
+          walk(node[i], depth + 1);
+          node[w++] = node[i];
+        }
+        node.length = w;
+        return;
+      }
+      var k;
+      for (k in node) {
+        if (hasOwn(node, k) && node[k] && typeof node[k] === 'object') walk(node[k], depth + 1);
+      }
+    }
+    walk(data, 0);
+    return data;
+  }
+
+  function tryFeedback(token) {
+    if (!token || typeof W.fetch !== 'function') return;
+    var client = { clientName: 'MWEB', clientVersion: '2.20250101.00.00' };
+    try {
+      if (W.ytcfg && typeof W.ytcfg.get === 'function') {
+        var ctx = W.ytcfg.get('INNERTUBE_CONTEXT');
+        if (ctx && ctx.client) client = ctx.client;
+      }
+    } catch (e) { /* keep the mobile client */ }
+    try {
+      W.fetch('/youtubei/v1/feedback?prettyPrint=false', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ context: { client: client }, feedbackTokens: [token] })
+      }).catch(function () {});
+    } catch (err) { /* the blocklist still hides it */ }
+  }
+
+  function isRemoveControl(el) {
+    if (!el) return false;
+    var text = normLabel(el.textContent || '');
+    var label = el.getAttribute ? String(el.getAttribute('aria-label') || el.getAttribute('title') || '') : '';
+    if (/remove|delete/i.test(label)) return true;
+    if (text === 'remove' || text === 'delete') return true;
+    return false;
+  }
+
+  function rowQuery(row) {
+    if (!row) return '';
+    var explicit = row.getAttribute && row.getAttribute('data-ytplus-query');
+    if (explicit) return explicit;
+    return String(row.textContent || '').replace(/\b(remove|delete)\b/ig, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  }
+
+  function eachSuggestionRow(doc, fn) {
+    var root = doc && (doc.body || doc.documentElement || doc);
+    if (!root) return;
+    var all = [];
+    walkElements(root, all);
+    var i, kids, j;
+    for (i = 0; i < all.length; i++) {
+      kids = elementChildren(all[i]);
+      for (j = 0; j < kids.length; j++) {
+        if (!isRemoveControl(kids[j])) continue;
+        var q = rowQuery(all[i]);
+        if (q) fn(all[i], q);
+        break;
+      }
+    }
+  }
+
+  function handleSearchClick(target) {
+    var node = target;
+    var hops = 0;
+    var control = null;
+    while (node && hops < 5) {
+      if (isRemoveControl(node)) { control = node; break; }
+      node = node.parentNode;
+      hops++;
+    }
+    if (!control || !control.parentNode) return false;
+    var row = control.parentNode;
+    var query = rowQuery(row);
+    if (!query || normQuery(query).length > 120) return false;
+    rememberSearchRemoval(query);
+    var token = row.getAttribute && (row.getAttribute('data-ytplus-token') || '');
+    if (token) tryFeedback(token);
+    if (row.style) row.style.display = 'none';
+    return true;
+  }
+
+  function scrubSearch(doc) {
+    doc = doc || D;
+    var blocked = loadBlock();
+    eachSuggestionRow(doc, function (row, q) {
+      if (blocked[normQuery(q)] && row.style) row.style.display = 'none';
+    });
+  }
+
+  function paintSearch(doc) {
+    doc = doc || D;
+    var nodes = [];
+    if (doc && doc.querySelectorAll) {
+      var found = doc.querySelectorAll('ytm-search, ytm-searchbox, ytm-search-suggestions, input[type="search"], [role="listbox"]');
+      var i;
+      if (found && found.length) {
+        for (i = 0; i < found.length; i++) nodes.push(found[i]);
+      }
+    }
+    eachSuggestionRow(doc, function (row) {
+      nodes.push(row);
+      if (row.parentNode) nodes.push(row.parentNode);
+    });
+    var j, el;
+    for (j = 0; j < nodes.length; j++) {
+      el = nodes[j];
+      if (!el || !el.style) continue;
+      el.style.backgroundColor = '#0f0f0f';
+      el.style.color = '#f1f1f1';
+    }
+  }
+
+  function activeVideo() {
+    if (!D || typeof D.querySelectorAll !== 'function') return null;
+    var list = D.querySelectorAll('video');
+    if (!list || !list.length) return null;
+    var i, best = null, bestArea = -1, area;
+    for (i = 0; i < list.length; i++) {
+      if (!list[i]) continue;
+      if (list[i].paused === false && !list[i].ended) return list[i];
+      area = (list[i].videoWidth || 0) * (list[i].videoHeight || 0);
+      if (!best || area >= bestArea) { best = list[i]; bestArea = area; }
+    }
+    return best;
+  }
+
+  function attrContent(el) {
+    if (!el) return '';
+    if (el.getAttribute) {
+      var c = el.getAttribute('content') || el.getAttribute('href');
+      if (c) return c;
+    }
+    return String(el.textContent || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  }
+
+  function readTitle() {
+    if (!D || !D.querySelector) return '';
+    var h = D.querySelector('h1.slim-video-information-title, ytm-slim-video-information-renderer h1, h1');
+    var t = attrContent(h);
+    if (t) return t;
+    return attrContent(D.querySelector('meta[property="og:title"]'));
+  }
+
+  function readAuthor() {
+    if (!D || !D.querySelector) return '';
+    return attrContent(D.querySelector('ytm-video-owner-renderer a, ytm-channel-name, .slim-owner-channel-name'));
+  }
+
+  function readArtwork(video) {
+    var og = D && D.querySelector && D.querySelector('meta[property="og:image"], link[itemprop="thumbnailUrl"]');
+    var u = attrContent(og);
+    if (u) return u;
+    if (video && video.poster) return video.poster;
+    var id = currentVideoId();
+    if (id) return 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg';
+    return '';
+  }
+
+  function bindMediaSession(ms, name, fn) {
+    if (!ms || typeof ms.setActionHandler !== 'function') return;
+    try { ms.setActionHandler(name, fn); } catch (e) { /* ignore */ }
+  }
+
+  function syncMediaSession(info) {
+    var ms = W.navigator && W.navigator.mediaSession;
+    if (!ms) return;
+    try {
+      if (typeof W.MediaMetadata === 'function') {
+        ms.metadata = new W.MediaMetadata({
+          title: info.title || 'YouTube +',
+          artist: info.author || '',
+          artwork: info.artwork ? [{ src: info.artwork, sizes: '512x512', type: 'image/jpeg' }] : []
+        });
+      }
+      if (!appActive && typeof ms.setPositionState === 'function' && info.duration > 0) {
+        var pos = info.elapsed;
+        if (pos < 0) pos = 0;
+        if (pos > info.duration) pos = info.duration;
+        ms.setPositionState({
+          duration: info.duration,
+          playbackRate: info.rate > 0 ? info.rate : 1,
+          position: pos
+        });
+      }
+      if (!appActive && ms.playbackState !== undefined) ms.playbackState = info.rate > 0 ? 'playing' : 'paused';
+    } catch (e) { /* WebKit rejects a position past the duration */ }
+    // Re-apply every time. m.youtube.com installs its own handlers, and the
+    // lock screen then seeks by WebKit's default of five seconds.
+    // Ours always seek ten seconds.
+    bindMediaSession(ms, 'play', function () { remoteCommand('play'); });
+    bindMediaSession(ms, 'pause', function () { remoteCommand('pause'); });
+    bindMediaSession(ms, 'seekbackward', function () { remoteCommand('skip', -10); });
+    bindMediaSession(ms, 'seekforward', function () { remoteCommand('skip', 10); });
+    bindMediaSession(ms, 'seekto', function (d) {
+      if (d && typeof d.seekTime === 'number') remoteCommand('seek', d.seekTime);
+    });
+    bindMediaSession(ms, 'nexttrack', null);
+    bindMediaSession(ms, 'previoustrack', null);
+    if (!ms.__ytplusClaim && typeof ms.setActionHandler === 'function') {
+      ms.__ytplusClaim = true;
+      var origSet = ms.setActionHandler;
+      ms.setActionHandler = function (name, handler) {
+        if (name === 'seekforward') return origSet.call(this, name, function () { remoteCommand('skip', 10); });
+        if (name === 'seekbackward') return origSet.call(this, name, function () { remoteCommand('skip', -10); });
+        if (name === 'play') return origSet.call(this, name, function () { remoteCommand('play'); });
+        if (name === 'pause') return origSet.call(this, name, function () { remoteCommand('pause'); });
+        if (name === 'nexttrack' || name === 'previoustrack') return origSet.call(this, name, null);
+        return origSet.call(this, name, handler);
+      };
+    }
+  }
+
+  function publishNowPlaying(video, force) {
+    video = video || activeVideo();
+    if (!video) return null;
+    var id = currentVideoId() || '';
+    var src = String(video.currentSrc || video.src || '');
+    var key = id + '|' + src;
+    var now = Date.now();
+    if (!force && key === lastNowKey && now - lastNow < 1000) return null;
+    lastNow = now;
+    lastNowKey = key;
+    var duration = (typeof video.duration === 'number' && isFinite(video.duration)) ? video.duration : 0;
+    var elapsed = (typeof video.currentTime === 'number' && isFinite(video.currentTime)) ? video.currentTime : 0;
+    var info = {
+      type: 'nowPlaying',
+      title: readTitle(),
+      author: readAuthor(),
+      artwork: readArtwork(video),
+      duration: duration,
+      elapsed: elapsed,
+      rate: (function () {
+        if (video.paused) return 0;
+        var pr = Number(video.playbackRate);
+        return isFinite(pr) ? pr : 1;
+      })(),
+      videoId: id
+    };
+    syncMediaSession(info);
+    postToApp(info);
+    return info;
+  }
+
+  function setTime(video, t) {
+    if (!isFinite(t)) return;
+    if (t < 0) t = 0;
+    var d = video.duration;
+    if (typeof d === 'number' && isFinite(d) && d > 0 && t > d) t = d;
+    video.currentTime = t;
+  }
+
+  function remoteCommand(name, value) {
+    var sig = String(name) + ':' + (value == null ? '' : String(value));
+    var now = Date.now();
+    if (sig === lastCmd && now - lastCmdAt < 200) return false;
+    lastCmd = sig;
+    lastCmdAt = now;
+    var video = activeVideo();
+    if (!video) return false;
+    if (name === 'play') {
+      releaseForPlayback(video);
+      return true;
+    } else if (name === 'pause') {
+      if (!appActive || backgrounding) freezeForBackground(video);
+      else userPause(video);
+    } else if (name === 'toggle') {
+      if (video.__ytplusUserPaused || video.paused || Number(video.playbackRate) === 0) releaseForPlayback(video);
+      else if (!appActive || backgrounding) freezeForBackground(video);
+      else userPause(video);
+    } else     if (name === 'skip') {
+      // Lock-screen skip is always 10 seconds, even if a handler was told five.
+      var delta = Number(value);
+      if (!isFinite(delta) || Math.abs(delta) !== 10) delta = delta < 0 ? -10 : 10;
+      setTime(video, (Number(video.currentTime) || 0) + delta);
+    } else if (name === 'seek') {
+      var at = Number(value);
+      if (!isFinite(at)) return false;
+      setTime(video, at);
+    } else return false;
+    publishNowPlaying(video, true);
+    return true;
+  }
+
   function installWatchChrome() {
     if (!D || D.__ytplusWatch) return;
     D.__ytplusWatch = true;
@@ -983,9 +1896,21 @@
         else if (mq.addListener) mq.addListener(onChange);
       }
     } catch (e) { /* ignore */ }
-    if (D.addEventListener) D.addEventListener('yt-navigate-finish', function () { syncWatchBar(); hideOpenApp(); }, true);
+    if (D.addEventListener) {
+      D.addEventListener('yt-navigate-finish', function () {
+        syncWatchBar();
+        hideOpenApp();
+        mountSettingsEntry(D);
+        scrubSearch(D);
+        paintSearch(D);
+      }, true);
+      D.addEventListener('click', function (ev) {
+        try { handleSearchClick(ev && ev.target); } catch (e) { /* ignore */ }
+      }, true);
+    }
     syncWatchBar();
     hideOpenApp();
+    mountSettingsEntry(D);
   }
 
   function onTick() {
@@ -1009,6 +1934,12 @@
     }
     try { syncWatchBar(); } catch (e6) { /* ignore */ }
     try { hideOpenApp(); } catch (e7) { /* ignore */ }
+    try { mountSettingsEntry(D); } catch (e8) { /* ignore */ }
+    try { scrubSearch(D); paintSearch(D); } catch (e9) { /* ignore */ }
+    try {
+      var playing = activeVideo();
+      if (playing) publishNowPlaying(playing, false);
+    } catch (e10) { /* ignore */ }
   }
 
   function startLoops() {
@@ -1016,9 +1947,19 @@
     W.__ytplusTimer = W.setInterval(onTick, 1000);
   }
 
+  function isMainFrame() {
+    try {
+      if (!W.top) return true;
+      return W.top === W;
+    } catch (e) { return true; }
+  }
+
   function boot() {
     installVisibilityShim();
     installPauseGuard();
+    // Subframes only need the lifecycle hooks. The feed parser and the poll
+    // timer stay in the main frame so tab switches do not each walk JSON.
+    if (!isMainFrame()) return;
     injectCSS();
     installWatchChrome();
     startLoops();
@@ -1040,15 +1981,19 @@
     return CFG;
   }
 
-  installParseHook();
-  installResponseHook();
-  installFetchHook();
+  if (isMainFrame()) {
+    installParseHook();
+    installResponseHook();
+    installFetchHook();
+  }
 
   W.YouTubePlus = {
     version: VERSION,
     boot: boot,
     applySettings: applySettings,
     setAppActive: setAppActive,
+    holdForBackground: holdForBackground,
+    recoverIfStalled: recoverIfStalled,
     process: process,
     sponsorDecision: sponsorDecision,
     pickDeArrowTitle: pickDeArrowTitle,
@@ -1061,6 +2006,15 @@
     isWatchPage: isWatchPage,
     isOpenAppLabel: isOpenAppLabel,
     pivotTabs: function () { return PIVOT_TABS; },
+    mountSettingsEntry: mountSettingsEntry,
+    rememberSearchRemoval: rememberSearchRemoval,
+    filterSearchPayload: filterSearchPayload,
+    blockedSearches: function () { var set = loadBlock(); var k, out = []; for (k in set) if (hasOwn(set, k)) out.push(k); return out; },
+    handleSearchClick: handleSearchClick,
+    scrubSearch: scrubSearch,
+    paintSearch: paintSearch,
+    remoteCommand: remoteCommand,
+    publishNowPlaying: publishNowPlaying,
     stats: function () { return stats; },
     settings: function () { return CFG; }
   };

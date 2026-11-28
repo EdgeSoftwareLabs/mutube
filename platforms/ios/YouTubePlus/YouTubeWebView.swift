@@ -34,10 +34,6 @@ final class WebSession: ObservableObject {
         webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.applySettings(\(json));", completionHandler: nil)
     }
 
-    func requestPictureInPicture() {
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.requestPictureInPicture();", completionHandler: nil)
-    }
-
     /// Cold launch: `onOpenURL` often arrives while content rules are still compiling,
     /// so the first load reads `url`. If the page is already up, load immediately.
     func open(_ incoming: URL) {
@@ -106,6 +102,7 @@ extension YouTubeWebView {
 
         func makeWebView() -> WKWebView {
             WebCache.install()
+            PlaybackSession.configure()
             let config = WKWebViewConfiguration()
             config.websiteDataStore = .default()
             config.suppressesIncrementalRendering = false
@@ -118,22 +115,23 @@ extension YouTubeWebView {
             enableElementFullscreen(config)
 
             let controller = config.userContentController
-            // Main frame only. Browse JSON and tab thumbnails live there; subframes
-            // would each install the parser hook and the poll timer.
+            // Every frame, at document start, so the visibility and pause hooks
+            // exist before YouTube's own scripts. The heavy feed parser still
+            // runs only in the main frame (see isMainFrame in the script).
             let prelude = WKUserScript(
                 source: ScriptLoader.prelude(for: settings.settings),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             let bundle = WKUserScript(
                 source: ScriptLoader.userScript(),
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             let boot = WKUserScript(
                 source: "window.YouTubePlus&&window.YouTubePlus.boot();",
                 injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+                forMainFrameOnly: false
             )
             controller.addUserScript(prelude)
             controller.addUserScript(bundle)
@@ -170,6 +168,7 @@ extension YouTubeWebView {
 
             self.webView = webView
             session.webView = webView
+            PlaybackSession.attach(webView)
             start(webView)
             return webView
         }
@@ -212,11 +211,19 @@ extension YouTubeWebView {
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard settings.settings.debugLogging else { return }
-            if let body = message.body as? [String: Any], let text = body["message"] as? String {
+            guard let body = message.body as? [String: Any] else { return }
+            let type = body["type"] as? String
+            if type == "settings" {
+                onRequestSettings()
+                return
+            }
+            if type == "nowPlaying" {
+                PlaybackSession.update(from: body)
+                return
+            }
+            guard settings.settings.debugLogging, type == "log" else { return }
+            if let text = body["message"] as? String {
                 NSLog("[YouTube+] %@", text)
-            } else {
-                NSLog("[YouTube+] %@", String(describing: message.body))
             }
         }
 

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Generate every YouTube + icon from one SVG master.
 
-Original artwork in the general style of YouTube's app icons (red rounded
-"play button" with a white triangle), plus a red "+" badge with a white ring,
-in the approved "E2" style: logo filled with an iridescent pastel gradient on
-solid black; Top Shelf layout "T1c".
+Original artwork in the general style of YouTube's app icons: a rounded
+play button with a white triangle, filled with an iridescent pastel gradient
+on solid black. The play triangle's centroid sits at the center of a square
+icon. There is no corner badge. Top Shelf layout is "T1c".
 Geometry is drawn from scratch here and is not traced from YouTube's logo.
 
 Requires: pip install cairosvg pillow numpy
-Usage:    python3 icons/generate_icons.py      (writes into icons/ and platforms/)
+Usage:    python3 icons/generate_icons.py            (writes into icons/ and platforms/)
+          python3 icons/generate_icons.py --samples
+              (writes icons/samples/ only; does not replace platform assets)
 """
+import argparse
 import io
 import json
 import shutil
@@ -17,7 +20,7 @@ from pathlib import Path
 
 import cairosvg
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "icons"
@@ -25,31 +28,25 @@ RED = "#FF0000"
 DARK = "#0F0F0F"
 
 
-def logo_group(with_badge=True):
-    # Logo drawn on a 1024x1024 grid, centred on (512, 512).
-    badge = f"""
-    <g id="badge">
-      <circle cx="780" cy="300" r="132" fill="{RED}" stroke="#FFFFFF" stroke-width="32"/>
-      <rect x="712" y="282" width="136" height="36" rx="18" fill="#FFFFFF"/>
-      <rect x="762" y="232" width="36" height="136" rx="18" fill="#FFFFFF"/>
-    </g>""" if with_badge else ""
-    # translate() recentres the visual bounding box (button + badge) on 512,512.
+def logo_group():
+    # Play button on a 1024 grid. translate(-35 57) is historical; square icons
+    # recenter on the triangle centroid instead of this group's origin.
     return f"""
   <g id="logo" transform="translate(-35 57)">
     <rect x="182" y="282" width="660" height="460" rx="138" ry="138" fill="{RED}"/>
     <path d="M 440 404 L 440 620 L 626 512 Z" fill="#FFFFFF" stroke="#FFFFFF"
-          stroke-width="26" stroke-linejoin="round"/>{badge}
+          stroke-width="26" stroke-linejoin="round"/>
   </g>"""
 
 
-def svg_square(bg="#FFFFFF", size=1024, corner=0, logo_scale=0.96, badge=True):
+def svg_square(bg="#FFFFFF", size=1024, corner=0, logo_scale=0.96):
     s = logo_scale
     t = 512 - 512 * s
     bg_el = "" if bg is None else f'<rect width="1024" height="1024" rx="{corner}" fill="{bg}"/>'
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 1024 1024">
   <title>YouTube +</title>
   {bg_el}
-  <g transform="translate({t} {t}) scale({s})">{logo_group(badge)}</g>
+  <g transform="translate({t} {t}) scale({s})">{logo_group()}</g>
 </svg>
 """
 
@@ -99,9 +96,9 @@ def png(svg_text, w, h, path, flatten=None):
 
 
 # ---------------------------------------------------------------------------
-# "E2" artwork (approved Nov 13 2026): solid black background, logo filled with
-# the iridescent pastel gradient (white play triangle, white badge ring and "+"),
-# soft coloured glow, white "YouTube +" wordmark in Google Sans Bold.
+# Square icon (approved sample): solid black, play button filled with the
+# iridescent pastel gradient, white triangle, no corner badge, soft coloured glow.
+# Wide layouts add a white "YouTube +" wordmark in Google Sans Bold.
 # Rasterised with numpy/Pillow (a smooth mesh gradient is not expressible in SVG).
 # ---------------------------------------------------------------------------
 FONT_BOLD = ICONS / "fonts" / "GoogleSans-Bold.ttf"     # OFL, static instance of google/fonts Google Sans
@@ -186,17 +183,17 @@ def black(w, h):
 
 
 def e2_layout(w, h, scale=1, canvas=None):
-    """The E2 icon: logo centred at 36% height, wordmark centred below. Reference 1280x768.
+    """Apple TV icon: no-badge play button above the wordmark. Reference 1280x768.
     canvas=None draws on black; pass a transparent image for a parallax front layer."""
     W, H = int(w * scale), int(h * scale)
-    k = H / 768
     c = black(W, H) if canvas is None else canvas
-    vis_h = 0.52 * H
-    im, _, _ = logo_image(vis_h)
-    L = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    L.alpha_composite(im, (int(W / 2 - im.width / 2), int(H * 0.36 - im.height / 2)))
-    with_glow(c, L, vis_h)
-    f = font(116 * k)
+    button_h = 0.46 * H
+    im, _ = nobadge_logo(button_h)
+    k = im.width / 1024.0
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    layer.alpha_composite(im, (int(round(W / 2 - TRI_CX * k)), int(round(H * 0.40 - TRI_CY * k))))
+    with_glow(c, layer, button_h)
+    f = font(116 * H / 768)
     x = W / 2 - f.getlength("YouTube +") / 2
     ImageDraw.Draw(c).text((x, H * 0.865), "YouTube +", font=f, fill="#FFFFFF", anchor="ls")
     return c
@@ -209,7 +206,7 @@ def t1c_layout(w, h, scale=1):
     k = H / 720
     c = black(W, H)
     vis_h = 250 * k
-    im, (x0, x1, y0, y1), bcy = logo_image(vis_h)
+    im, (x0, x1, y0, y1), bcy = logo_image(vis_h, badge=False)
     f = font(165 * k)
     d = ImageDraw.Draw(c)
     tb = d.textbbox((0, 0), "YouTube +", font=f, anchor="ls")
@@ -222,16 +219,21 @@ def t1c_layout(w, h, scale=1):
     return c
 
 
-def square_icon(px):
-    """Square E2 icon (gradient logo on black, no wordmark: every platform labels the icon)."""
+def _square_icon_with_badge(px):
+    """Old corner-badge mark. Only used to reproduce icons/samples/new-vs-old.png."""
     S = 1024
     c = black(S, S)
     vis_h = 0.55 * S
-    im, _, _ = logo_image(vis_h)
+    im, _, _ = logo_image(vis_h, badge=True)
     L = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     L.alpha_composite(im, (int(S / 2 - im.width / 2), int(S / 2 - im.height / 2)))
     with_glow(c, L, vis_h)
     return c if px == S else c.resize((px, px), Image.LANCZOS)
+
+
+def square_icon(px):
+    """Square icon: gradient play button on black, triangle centroid at the center."""
+    return square_icon_new(px)
 
 
 # Centre of the play button (the gradient rounded rectangle) on the 1024 grid, after
@@ -239,19 +241,112 @@ def square_icon(px):
 BUTTON_CX, BUTTON_CY = 182 + 660 / 2 - 35, 282 + 460 / 2 + 57
 
 
-def square_icon_centered(px):
-    """Square E2 icon with the play button (not the button + badge box) exactly in the
-    centre; the "+" badge overhangs towards the top-right corner. Used for Samsung
-    Tizen, whose launcher tile made the box-centred icon look off-centre."""
+# Play-triangle centroid on the 1024 grid after translate(-35, 57).
+# Vertices: (405, 461), (405, 677), (591, 569).
+TRI_CX = (405 + 405 + 591) / 3.0
+TRI_CY = (461 + 677 + 569) / 3.0
+# Button height as a fraction of the tile. The old badge icon used ~43% so the
+# plus could sit in the corner; without the badge the play button grows to the
+# proportion of the standard YouTube app icon.
+NEW_BUTTON_FRAC = 0.58
+
+
+def _place_logo(canvas, im, vis_ref_h):
+    """Put `im` (a 1024-grid render) so the play triangle's centroid is at the canvas center."""
+    k = im.width / 1024.0
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    layer.alpha_composite(im, (int(round(canvas.width / 2 - TRI_CX * k)),
+                                int(round(canvas.height / 2 - TRI_CY * k))))
+    with_glow(canvas, layer, vis_ref_h)
+    return canvas
+
+
+def nobadge_logo(button_h):
+    """Gradient play button, no plus badge. `button_h` is the button's pixel height."""
+    vis_h = button_h * 590 / 460.0
+    return logo_image(vis_h, badge=False)[0], button_h
+
+
+def square_icon_new(px, button_frac=NEW_BUTTON_FRAC):
+    """Sample icon: no badge, play button enlarged, triangle centroid at the tile center."""
     S = 1024
-    c = black(S, S)
-    vis_h = 0.55 * S                       # same logo size as square_icon()
-    im, _, _ = logo_image(vis_h)
-    k = im.width / 1024
-    L = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    L.alpha_composite(im, (int(round(S / 2 - BUTTON_CX * k)), int(round(S / 2 - BUTTON_CY * k))))
-    with_glow(c, L, vis_h)
+    im, button_h = nobadge_logo(button_frac * S)
+    c = _place_logo(black(S, S), im, button_h)
     return c if px == S else c.resize((px, px), Image.LANCZOS)
+
+
+def youtube_proportion_reference(px, button_frac=NEW_BUTTON_FRAC):
+    """White rounded tile and a red play button at the same size and centering as square_icon_new.
+    A proportion reference for the App Store YouTube icon, not a copy of Google's artwork."""
+    S = 1024
+    button_h = button_frac * S
+    size = max(1, int(round(1024 * button_h / 460.0)))
+    mask = _svg_layer(_FILL_NO_BADGE, size)
+    red = Image.new("RGBA", (size, size), (255, 0, 0, 255))
+    red.putalpha(mask.split()[-1])
+    red.alpha_composite(_svg_layer(_WHITE_NO_BADGE, size))
+    tile = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    rmask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(rmask).rounded_rectangle((0, 0, S - 1, S - 1), radius=int(S * 0.223), fill=255)
+    tile.putalpha(rmask)
+    k = size / 1024.0
+    canvas = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    canvas.alpha_composite(tile)
+    canvas.alpha_composite(red, (int(round(S / 2 - TRI_CX * k)), int(round(S / 2 - TRI_CY * k))))
+    return canvas if px == S else canvas.resize((px, px), Image.LANCZOS)
+
+
+def greyscale_icon(img):
+    return ImageOps.grayscale(img.convert("RGB")).convert("RGB")
+
+
+def tvos_sample(w=1280, h=768):
+    """Apple TV icon layout (logo above the wordmark) using the no-badge play button."""
+    c = black(w, h)
+    button_h = 0.46 * h
+    im, _ = nobadge_logo(button_h)
+    k = im.width / 1024.0
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    # Triangle centered horizontally, sitting in the upper half above the wordmark.
+    layer.alpha_composite(im, (int(round(w / 2 - TRI_CX * k)), int(round(h * 0.40 - TRI_CY * k))))
+    with_glow(c, layer, button_h)
+    f = font(116 * h / 768)
+    x = w / 2 - f.getlength("YouTube +") / 2
+    ImageDraw.Draw(c).text((x, h * 0.865), "YouTube +", font=f, fill="#FFFFFF", anchor="ls")
+    return c
+
+
+def write_samples():
+    """Write preview PNGs under icons/samples/. Does not touch platform asset catalogs."""
+    out = ICONS / "samples"
+    out.mkdir(parents=True, exist_ok=True)
+    new1024 = square_icon_new(1024)
+    save(new1024, out / "new-icon-1024.png")
+    save(new1024.resize((180, 180), Image.LANCZOS), out / "new-icon-ios-180.png")
+    save(tvos_sample(), out / "new-tvos-1280x768.png")
+    save(greyscale_icon(new1024).resize((512, 512), Image.LANCZOS), out / "new-helper-greyscale-512.png")
+
+    old = _square_icon_with_badge(420)
+    new = new1024.resize((420, 420), Image.LANCZOS)
+    ref = youtube_proportion_reference(420)
+    gap, label_h, pad = 36, 64, 28
+    sheet = Image.new("RGB", (pad * 2 + 420 * 3 + gap * 2, pad + 420 + label_h), (24, 24, 24))
+    labels = ("Current", "New", "YouTube proportions")
+    tiles = (old.convert("RGB"), new.convert("RGB"), ref.convert("RGB"))
+    draw = ImageDraw.Draw(sheet)
+    f = font(28)
+    for i, (tile, label) in enumerate(zip(tiles, labels)):
+        x = pad + i * (420 + gap)
+        sheet.paste(tile, (x, pad))
+        tw = f.getlength(label)
+        draw.text((x + (420 - tw) / 2, pad + 420 + 18), label, font=f, fill="#FFFFFF")
+    save(sheet, out / "new-vs-old.png")
+    print("samples written to", out.relative_to(ROOT))
+
+
+def square_icon_centered(px):
+    """Square icon with the play triangle's centroid at the canvas center."""
+    return square_icon_new(px)
 
 
 def save(img, path):
@@ -273,13 +368,10 @@ def contents(path, obj):
 
 
 def svg_e2_square(bg="#000000"):
-    """Vector approximation of the square E2 icon (for icon.svg / favicons in browsers):
-    black square, gradient blobs as radial gradients clipped to the logo shape.
-    The PNGs are the reference rendering."""
+    """Vector approximation of the square icon (for icon.svg / favicons).
+    The PNGs are the reference rendering. No corner badge."""
     S = 1024
-    # Fill bounding box in logo_group coordinates (button + badge circle, before translate).
-    bx0, by0, bx1, by1 = 182, 168, 912, 742
-    bw, bh = bx1 - bx0, by1 - by0
+    bx0, by0, bw, bh = 182, 282, 660, 460
     defs, rects = [], []
     for i, (x, y, r, col, k) in enumerate(BLOBS):
         sig = r * bw
@@ -287,17 +379,17 @@ def svg_e2_square(bg="#000000"):
                         for t in (0, 0.5, 1, 1.5, 2, 2.5, 3))
         defs.append(f'<radialGradient id="b{i}" gradientUnits="userSpaceOnUse" cx="{bx0 + x * bw:.1f}" cy="{by0 + y * bh:.1f}" r="{3 * sig:.1f}">{stops}</radialGradient>')
         rects.append(f'<rect x="{bx0}" y="{by0}" width="{bw}" height="{bh}" fill="url(#b{i})"/>')
-    clip = ('<clipPath id="c"><rect x="182" y="282" width="660" height="460" rx="138" ry="138"/>'
-            '<circle cx="780" cy="300" r="132"/></clipPath>')
-    s = 0.55 * S / 590
-    t = 512 - 512 * s
+    clip = f'<clipPath id="c"><rect x="{bx0}" y="{by0}" width="{bw}" height="{bh}" rx="138" ry="138"/></clipPath>'
+    s = NEW_BUTTON_FRAC * S / 460.0
+    tx = 512 - s * TRI_CX
+    ty = 512 - s * TRI_CY
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{S}" height="{S}" viewBox="0 0 {S} {S}">
   <title>YouTube +</title>
   <defs>{"".join(defs)}{clip}</defs>
   {"" if bg is None else f'<rect width="{S}" height="{S}" fill="{bg}"/>'}
-  <g transform="translate({t:.2f} {t:.2f}) scale({s:.4f})"><g transform="translate(-35 57)">
+  <g transform="translate({tx:.2f} {ty:.2f}) scale({s:.4f})"><g transform="translate(-35 57)">
     <g clip-path="url(#c)"><rect x="{bx0}" y="{by0}" width="{bw}" height="{bh}" fill="{BASE}"/>{"".join(rects)}</g>
-    {_WHITE}
+    {_WHITE_NO_BADGE}
   </g></g>
 </svg>
 """
@@ -360,9 +452,11 @@ def tvos_catalog(out):
 
 
 def ios_catalog(out, icon):
-    if out.exists():
-        shutil.rmtree(out)
+    # Keep sibling catalogs such as LaunchBackground. Only the app icon set is replaced.
     contents(out, {"info": INFO})
+    iset = out / "AppIcon.appiconset"
+    if iset.exists():
+        shutil.rmtree(iset)
     iset = out / "AppIcon.appiconset"
     # Single-size 1024 universal icon (Xcode 14+) plus legacy sizes for older tools.
     entries = [{"filename": "icon_1024.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}]
@@ -388,10 +482,9 @@ def main():
     save(sq(1024), ROOT / "icon-preview.png")
     for px in (1024, 512, 256, 192, 180, 128, 64, 32, 16):
         save(sq(px), ICONS / "png" / f"youtube-plus-{px}.png")
-    logo, _, _ = logo_image(0.55 * 1024)
-    t = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    t.alpha_composite(logo, ((1024 - logo.width) // 2, (1024 - logo.height) // 2))
-    t.save(ICONS / "png" / "youtube-plus-logo-1024.png", optimize=True)
+    mark, button_h = nobadge_logo(NEW_BUTTON_FRAC * 1024)
+    transparent = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    _place_logo(transparent, mark, button_h).save(ICONS / "png" / "youtube-plus-logo-1024.png", optimize=True)
     # The approved 16:10 tvOS icon artwork and Top Shelf, for reference / store listings.
     save(e2_layout(1280, 768), ICONS / "png" / "youtube-plus-tvos-1280x768.png")
     save(t1c_layout(1920, 720), ICONS / "png" / "youtube-plus-topshelf-1920x720.png")
@@ -402,11 +495,12 @@ def main():
     ios_catalog(ROOT / "platforms" / "ios" / "Assets.xcassets", icon)
 
     # Tizen: square icon (512 recommended, 1024 accepted), play button centred on the
-    # canvas (see square_icon_centered), + 16:9 tile.
+    # triangle, plus the greyscale YT+ Helper icon.
     tz = ROOT / "platforms" / "tizen"
     tz_icon = square_icon_centered(1024)
     save(tz_icon.resize((512, 512), Image.LANCZOS), tz / "icon.png")
     save(tz_icon, tz / "icon_1024.png")
+    save(greyscale_icon(tz_icon).resize((512, 512), Image.LANCZOS), tz / "icon_helper.png")
     wide = t1c_layout(1920, 1080)
     save(wide, tz / "icon_16b9.png")
 
@@ -426,8 +520,19 @@ def main():
     ico = Image.open(web / "icon-48.png")
     ico.save(web / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)])
     shutil.copy(ICONS / "youtube-plus.svg", web / "icon.svg")
+
+    ext = ROOT / "platforms" / "ios" / "YouTubePlusSafariExtension" / "Resources" / "images"
+    for px, name in ((48, "icon-48.png"), (96, "icon-96.png"), (128, "icon-128.png")):
+        save(sq(px), ext / name)
     print("icons written")
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--samples", action="store_true",
+                    help="write the no-badge icon samples under icons/samples/ and leave platform assets unchanged")
+    args = ap.parse_args()
+    if args.samples:
+        write_samples()
+    else:
+        main()

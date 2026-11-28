@@ -21,7 +21,6 @@ struct ContentView: View {
                 showSettings = true
             }
             .id(webToken)
-            controls
             if welcomeVisible {
                 welcomeToast
             }
@@ -35,21 +34,6 @@ struct ContentView: View {
         .onChange(of: scenePhase) { phase in
             handleScene(phase)
         }
-    }
-
-    private var controls: some View {
-        HStack(spacing: 8) {
-            if settings.settings.pictureInPicture {
-                overlayButton("pip.enter", label: "Picture in Picture") {
-                    session.requestPictureInPicture()
-                }
-            }
-            overlayButton("gearshape.fill", label: "YouTube + Settings") {
-                showSettings = true
-            }
-        }
-        .padding(.top, 8)
-        .padding(.trailing, 10)
     }
 
     private var welcomeToast: some View {
@@ -72,20 +56,6 @@ struct ContentView: View {
         .transition(.opacity)
     }
 
-    private func overlayButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white.opacity(0.92))
-                .frame(width: 32, height: 32)
-                .background(Color.black.opacity(0.55))
-                .clipShape(Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-
     private func appear() {
         PlaybackSession.configure()
         guard !settings.settings.welcomed else { return }
@@ -99,7 +69,15 @@ struct ContentView: View {
     }
 
     private func handleScene(_ phase: ScenePhase) {
-        PlaybackSession.configure()
-        session.setAppActive(phase == .active)
+        if phase == .active {
+            // PlaybackSession.returnToForeground owns setAppActive(true) so we
+            // do not flip the visibility shim twice or before the page is shown.
+            PlaybackSession.returnToForeground()
+        } else {
+            // willResignActive already started the hold; reinforce it and set
+            // the JS backgrounded flag as early as the scene phase allows.
+            PlaybackSession.keepAlive()
+            session.setAppActive(false)
+        }
     }
 }

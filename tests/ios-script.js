@@ -805,6 +805,8 @@ async function main() {
   check(settingsSwift.indexOf('#f1f1f1') !== -1, 'on track');
   check(settingsSwift.indexOf('#0f0f0f') !== -1, 'on knob');
   check(settingsSwift.indexOf('.toggleStyle(YouTubeToggleStyle())') !== -1, 'style applies to every toggle');
+  check(settingsSwift.indexOf('#available(iOS 17, *)') !== -1, 'isToggle is gated to iOS 17');
+  check(settingsSwift.indexOf('accessibilityValue(isOn ? "On" : "Off")') !== -1, 'switch value is announced on iOS 16');
   check(settingsSwift.indexOf('TizenTube') === -1, 'settings do not name TizenTube');
   check(contentSwift.indexOf('Welcome to YouTube +') !== -1, 'welcome toast');
   check(contentSwift.indexOf('TizenTube') === -1, 'main UI does not name TizenTube');

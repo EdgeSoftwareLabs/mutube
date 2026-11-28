@@ -108,8 +108,21 @@ struct YouTubeToggleStyle: ToggleStyle {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isToggle)
-        .accessibilityValue(configuration.isOn ? "On" : "Off")
+        .youtubeToggleAccessibility(isOn: configuration.isOn)
+    }
+}
+
+/// `.isToggle` is iOS 17. The deployment target stays 16, and the On/Off
+/// value is announced on both.
+private extension View {
+    @ViewBuilder
+    func youtubeToggleAccessibility(isOn: Bool) -> some View {
+        if #available(iOS 17, *) {
+            self.accessibilityAddTraits(.isToggle)
+                .accessibilityValue(isOn ? "On" : "Off")
+        } else {
+            self.accessibilityValue(isOn ? "On" : "Off")
+        }
     }
 }
 

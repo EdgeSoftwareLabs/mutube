@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.3';
+  var VERSION = '1.1.4';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -774,6 +774,8 @@
   var rawHidden = false;
   var rawState = 'visible';
   var realHiddenGet = null;
+  var acceptHold = true;
+  var lastTouchAt = 0;
 
   function pageReallyHidden() {
     if (typeof realHiddenGet === 'function') {
@@ -828,6 +830,13 @@
       resumeWanted();
     }
     onHiddenEvent.__ytplusInternal = true;
+    function noteTouch() { lastTouchAt = Date.now(); }
+    noteTouch.__ytplusInternal = true;
+    if (D.addEventListener) {
+      D.addEventListener('touchend', noteTouch, true);
+      D.addEventListener('pointerup', noteTouch, true);
+      D.addEventListener('click', noteTouch, true);
+    }
     var events = ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze', 'blur'];
     var i;
     for (i = 0; i < events.length; i++) {
@@ -861,16 +870,20 @@
     origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      // A lock-screen pause arrives while the document is already hidden, and
-      // sometimes before Swift has reported the scene change. That is not the
-      // user. A pause while the page is visible in the foreground is.
-      if (CFG.backgroundPlay && (!appActive || pageReallyHidden())) {
+      // A tap in the foreground is the user, even if WebKit still reports the
+      // page hidden for a moment after we come back. A pause with no tap,
+      // while the page is hidden or we are already backgrounded, is the lock.
+      if (recentUserGesture() && appActive && !backgrounding) {
+        markUserPause(this);
+        if (typeof origPause === 'function') return origPause.apply(this, arguments);
+        return;
+      }
+      if (CFG.backgroundPlay && (backgrounding || !appActive || pageReallyHidden())) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
       }
-      this.__ytplusUserPaused = true;
-      this.__ytplusWantsPlay = false;
+      markUserPause(this);
       if (typeof origPause === 'function') return origPause.apply(this, arguments);
     };
     Ctor.prototype.play = function () {
@@ -880,11 +893,49 @@
     };
   }
 
-  function userPause(video) {
+  function recentUserGesture() {
+    return !!lastTouchAt && (Date.now() - lastTouchAt) < 800;
+  }
+
+  function cancelRecover() {
+    if (W.__ytplusRecover && typeof W.clearTimeout === 'function') W.clearTimeout(W.__ytplusRecover);
+    W.__ytplusRecover = null;
+  }
+
+  function markUserPause(video) {
     if (!video) return;
     video.__ytplusUserPaused = true;
     video.__ytplusWantsPlay = false;
+    cancelRecover();
+  }
+
+  function userPause(video) {
+    markUserPause(video);
     if (typeof origMediaPause === 'function') origMediaPause.call(video);
+  }
+
+  function freezeForBackground(video) {
+    // pause() from a locked screen is ignored by WebKit on the way back to
+    // play(). Leaving the element playing and parking playbackRate at 0 keeps
+    // the media session allowed, so lock-screen play can set the rate to 1.
+    if (!video) return;
+    markUserPause(video);
+    var rate = Number(video.playbackRate);
+    if (isFinite(rate) && rate > 0) video.__ytplusSavedRate = rate;
+    if (!video.__ytplusSavedRate) video.__ytplusSavedRate = 1;
+    try { video.playbackRate = 0; } catch (e) { /* ignore */ }
+  }
+
+  function releaseForPlayback(video) {
+    if (!video) return;
+    video.__ytplusUserPaused = false;
+    video.__ytplusWantsPlay = true;
+    var rate = Number(video.__ytplusSavedRate);
+    if (!isFinite(rate) || rate <= 0) rate = 1;
+    try { video.playbackRate = rate; } catch (e) { /* ignore */ }
+    if (video.paused && typeof video.play === 'function') {
+      try { video.play(); } catch (e2) { /* ignore */ }
+    }
   }
 
   function resumeWanted() {
@@ -901,7 +952,14 @@
     }
   }
 
-  function holdForBackground() {
+  function holdForBackground(force) {
+    // Retries pass force=false. After setAppActive(true) those are ignored.
+    // A new background entry passes force=true.
+    if (!force && !acceptHold) {
+      log('stale hold ignored');
+      return false;
+    }
+    acceptHold = true;
     if (!CFG.backgroundPlay) {
       appActive = false;
       backgrounding = true;
@@ -950,10 +1008,14 @@
   function setAppActive(active) {
     var was = appActive;
     if (!active) {
-      holdForBackground();
+      acceptHold = true;
+      holdForBackground(true);
       log('appActive', false);
       return;
     }
+    // Synchronous: a background retry that arrives after this returns must
+    // see the foreground and do nothing.
+    acceptHold = false;
     appActive = true;
     backgrounding = false;
     if (!was) scheduleForegroundRecover();
@@ -1707,7 +1769,11 @@
       artwork: readArtwork(video),
       duration: duration,
       elapsed: elapsed,
-      rate: video.paused ? 0 : (Number(video.playbackRate) || 1),
+      rate: (function () {
+        if (video.paused) return 0;
+        var pr = Number(video.playbackRate);
+        return isFinite(pr) ? pr : 1;
+      })(),
       videoId: id
     };
     syncMediaSession(info);
@@ -1732,13 +1798,15 @@
     var video = activeVideo();
     if (!video) return false;
     if (name === 'play') {
-      if (typeof video.play === 'function') video.play();
+      releaseForPlayback(video);
+      return true;
     } else if (name === 'pause') {
-      userPause(video);
+      if (!appActive || backgrounding) freezeForBackground(video);
+      else userPause(video);
     } else if (name === 'toggle') {
-      if (video.paused) {
-        if (typeof video.play === 'function') video.play();
-      } else userPause(video);
+      if (video.__ytplusUserPaused || video.paused || Number(video.playbackRate) === 0) releaseForPlayback(video);
+      else if (!appActive || backgrounding) freezeForBackground(video);
+      else userPause(video);
     } else if (name === 'skip') {
       var delta = Number(value);
       if (!isFinite(delta)) delta = 10;

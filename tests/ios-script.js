@@ -385,13 +385,13 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.3'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.4'") !== -1, 'script version');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
   check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
   check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.3', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.4', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -399,7 +399,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.3', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.4', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -661,7 +661,7 @@ async function main() {
   check(locked.__ytplusUserPaused !== true, 'a hidden-page pause is not a user pause');
   locked.paused = true;
   doc.querySelectorAll = function (sel) { return sel === 'video' ? [locked] : []; };
-  YP.holdForBackground();
+  YP.holdForBackground(true);
   check(locked.plays === lockedPlays + 1, 'background hold resumes a video the user had not paused');
   YP.setAppActive(true);
   doc._ytSetRawVisibility(false);
@@ -695,6 +695,49 @@ async function main() {
   YP.setAppActive(true);
   pageHide.fn({});
   check(pageHides === 1, 'pagehide listeners run in the foreground');
+
+  var cycle = new win.HTMLMediaElement();
+  cycle.playbackRate = 1;
+  cycle.currentTime = 4;
+  cycle.play();
+  cycle.paused = false;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [cycle] : []; };
+  var touch = env.listeners.filter(function (l) { return l.type === 'touchend'; }).pop();
+  check(!!touch, 'taps are observed');
+  doc._ytSetRawVisibility(true);
+  touch.fn({});
+  cycle.pause();
+  check(cycle.pauses === 1, 'a foreground tap pause is delivered');
+  check(cycle.__ytplusUserPaused === true, 'a foreground tap pause is the user');
+  cycle.paused = true;
+  var cyclePlays = cycle.plays;
+  YP.setAppActive(false);
+  check(cycle.plays === cyclePlays, 'background stays paused after a foreground pause');
+  YP.setAppActive(true);
+  check(YP.holdForBackground() === false, 'a leftover background retry is ignored');
+  check(cycle.plays === cyclePlays, 'a leftover retry does not call play');
+  check(cycle.__ytplusUserPaused === true, 'the user pause survives the leftover retry');
+  cycle.play();
+  cycle.paused = true;
+  cycle.playbackRate = 1;
+  var beforeLeave = cycle.plays;
+  YP.setAppActive(false);
+  check(cycle.plays === beforeLeave + 1, 'leaving again resumes a video that is playing');
+  var bgPlays = cycle.plays;
+  var bgPauses = cycle.pauses || 0;
+  check(YP.remoteCommand('pause') === true, 'lock screen pause while backgrounded');
+  check(cycle.__ytplusUserPaused === true, 'lock screen pause is user intent');
+  check(cycle.playbackRate === 0, 'lock screen pause parks the rate instead of pause()');
+  check((cycle.pauses || 0) === bgPauses, 'lock screen pause does not call pause()');
+  check(YP.publishNowPlaying(cycle, true).rate === 0, 'now playing rate is 0 while parked');
+  check(YP.remoteCommand('skip', 10) === true, 'lock screen skip while paused');
+  check(cycle.currentTime === 14, 'skip moves ten seconds');
+  check(cycle.playbackRate === 0, 'skip leaves a lock-screen pause parked');
+  check(YP.remoteCommand('play') === true, 'lock screen play while backgrounded');
+  check(cycle.__ytplusUserPaused === false, 'lock screen play clears the user pause');
+  check(cycle.playbackRate === 1, 'lock screen play restores the rate');
+  check(cycle.plays === bgPlays + 1, 'lock screen play calls play() when the element is paused');
+  doc._ytSetRawVisibility(false);
   doc.querySelectorAll = function () { return []; };
   reset(YP);
 
@@ -857,7 +900,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.3', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.4', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -899,6 +942,8 @@ async function main() {
   check(webViewSwift.indexOf('mediaTypesRequiringUserActionForPlayback = []') !== -1, 'playback without a fresh tap');
   check(contentSwift.indexOf('keepAlive()') !== -1, 'background keeps the audio session');
   check(playbackSwift.indexOf('beginBackgroundTask') !== -1, 'background task keeps the process alive');
+  check(playbackSwift.indexOf('holdGeneration') !== -1, 'foreground cancels background retries');
+  check(playbackSwift.indexOf('cancelNudges') !== -1, 'pending resume timers are cancelled');
   check(playbackSwift.indexOf('holdForBackground') !== -1, 'page is asked to resume');
   check(webViewSwift.indexOf('forMainFrameOnly: false') !== -1, 'lifecycle script starts in every frame');
   check(webViewSwift.indexOf('forMainFrameOnly: true') === -1, 'document-start hook is not main-frame only');

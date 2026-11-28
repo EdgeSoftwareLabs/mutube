@@ -50,6 +50,8 @@ enum PlaybackSession {
 
     private static var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private static var lifecycleInstalled = false
+    private static var holdGeneration = 0
+    private static var nudgeItems: [DispatchWorkItem] = []
 
     /// Scene is no longer active. Keep the audio session and ask the page to
     /// resume a video the user had not paused. Retries run inside a background
@@ -59,6 +61,9 @@ enum PlaybackSession {
     }
 
     static func holdInBackground() {
+        holdGeneration += 1
+        let generation = holdGeneration
+        cancelNudges()
         activateForBackground()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
         if backgroundTask == .invalid {
@@ -66,20 +71,22 @@ enum PlaybackSession {
                 endHold()
             }
         }
-        nudge()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { nudge() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
-            nudge()
-            endHold()
-        }
+        scheduleNudge(generation, 0, true)
+        scheduleNudge(generation, 0.25, false)
+        scheduleNudge(generation, 0.75, false)
         if !nowInfo.isEmpty {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nowInfo
         }
     }
 
     static func returnToForeground() {
+        // Drop every pending 250/750ms retry before the page can call play()
+        // over a pause the user just made.
+        holdGeneration += 1
+        cancelNudges()
         endHold()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.setAppActive(true);", completionHandler: nil)
     }
 
     static func installLifecycle() {
@@ -89,14 +96,33 @@ enum PlaybackSession {
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             holdInBackground()
         }
+        center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            returnToForeground()
+        }
         center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             returnToForeground()
         }
     }
 
-    private static func nudge() {
+    private static func scheduleNudge(_ generation: Int, _ delay: Double, _ force: Bool) {
+        let item = DispatchWorkItem {
+            guard generation == holdGeneration else { return }
+            nudge(force)
+            if delay >= 0.75 { endHold() }
+        }
+        nudgeItems.append(item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private static func cancelNudges() {
+        nudgeItems.forEach { $0.cancel() }
+        nudgeItems.removeAll()
+    }
+
+    private static func nudge(_ force: Bool) {
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.holdForBackground();", completionHandler: nil)
+        let flag = force ? "true" : "false"
+        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.holdForBackground(\(flag));", completionHandler: nil)
     }
 
     private static func endHold() {
@@ -195,14 +221,44 @@ enum PlaybackSession {
     }
 
     private static func run(_ name: String, _ value: Double?) {
+        activateForBackground()
         let js: String
         if let value {
             js = "window.YouTubePlus&&window.YouTubePlus.remoteCommand('\(name)',\(value));"
         } else {
             js = "window.YouTubePlus&&window.YouTubePlus.remoteCommand('\(name)');"
         }
-        DispatchQueue.main.async {
-            webView?.evaluateJavaScript(js, completionHandler: nil)
+        let box = RemoteTask()
+        box.id = UIApplication.shared.beginBackgroundTask(withName: "YouTubePlusRemote") {
+            box.end()
         }
+        func attempt(_ remaining: Int) {
+            guard let webView else {
+                box.end()
+                return
+            }
+            webView.evaluateJavaScript(js) { _, error in
+                if error != nil && remaining > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        attempt(remaining - 1)
+                    }
+                    return
+                }
+                box.end()
+            }
+        }
+        DispatchQueue.main.async {
+            attempt(2)
+        }
+    }
+}
+
+private final class RemoteTask {
+    var id: UIBackgroundTaskIdentifier = .invalid
+    func end() {
+        if id == .invalid { return }
+        let ending = id
+        id = .invalid
+        UIApplication.shared.endBackgroundTask(ending)
     }
 }

@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.1.5';
+  var VERSION = '1.1.6';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -871,27 +871,33 @@
     origMediaPause = origPause;
     Ctor.prototype.__ytplusPause = true;
     Ctor.prototype.pause = function () {
-      // A tap while we are in the foreground is the user, including when
-      // WebKit still reports the page hidden right after we come back.
-      // Anything else while hidden or backgrounded is the lock/home transition
-      // and must not be stored as a user pause, or audio will not continue.
-      if (recentUserGesture() && appActive && !backgrounding) {
-        this.__ytplusExplicitPause = true;
-        markUserPause(this);
-        if (typeof origPause === 'function') return origPause.apply(this, arguments);
-        return;
-      }
-      if (CFG.backgroundPlay && (backgrounding || !appActive || pageReallyHidden())) {
+      // Background / resign first: never treat WebKit's Home/lock pause as the user.
+      if (CFG.backgroundPlay && (backgrounding || !appActive)) {
         stats.pauseBlocked++;
         log('blocked pause');
         return;
       }
-      this.__ytplusExplicitPause = true;
+      // A tap in the foreground is the user, including when WebKit still
+      // reports the page hidden for a moment after we come back.
+      if (recentUserGesture() && appActive && !backgrounding) {
+        markExplicitPause(this);
+        if (typeof origPause === 'function') return origPause.apply(this, arguments);
+        return;
+      }
+      if (CFG.backgroundPlay && pageReallyHidden()) {
+        stats.pauseBlocked++;
+        log('blocked pause');
+        return;
+      }
+      // Foreground programmatic pause. Deliver it, but do not mark explicit —
+      // a Home/lock pause that races ahead of willResignActive must still be
+      // clearable by holdForBackground.
       markUserPause(this);
       if (typeof origPause === 'function') return origPause.apply(this, arguments);
     };
     Ctor.prototype.play = function () {
       this.__ytplusUserPaused = false;
+      this.__ytplusExplicitPause = false;
       this.__ytplusWantsPlay = true;
       if (typeof origPlay === 'function') return origPlay.apply(this, arguments);
     };
@@ -916,8 +922,14 @@
     cancelRecover();
   }
 
-  function userPause(video) {
+  function markExplicitPause(video) {
+    if (!video) return;
+    video.__ytplusExplicitPause = true;
     markUserPause(video);
+  }
+
+  function userPause(video) {
+    markExplicitPause(video);
     if (typeof origMediaPause === 'function') origMediaPause.call(video);
   }
 
@@ -926,7 +938,7 @@
     // play(). Leaving the element playing and parking playbackRate at 0 keeps
     // the media session allowed, so lock-screen play can set the rate to 1.
     if (!video) return;
-    markUserPause(video);
+    markExplicitPause(video);
     var rate = Number(video.playbackRate);
     if (isFinite(rate) && rate > 0) video.__ytplusSavedRate = rate;
     if (!video.__ytplusSavedRate) video.__ytplusSavedRate = 1;
@@ -937,6 +949,7 @@
   function releaseForPlayback(video) {
     if (!video) return;
     video.__ytplusUserPaused = false;
+    video.__ytplusExplicitPause = false;
     video.__ytplusWantsPlay = true;
     var rate = Number(video.__ytplusSavedRate);
     if (!isFinite(rate) || rate <= 0) rate = 1;
@@ -947,6 +960,21 @@
     publishNowPlaying(video, true);
   }
 
+  function clearSystemPauseMarks() {
+    // WebKit often pauses before Swift's hold JS lands. That race must not
+    // permanently look like a user pause, or Home/app-switch audio dies.
+    if (!D || typeof D.querySelectorAll !== 'function') return;
+    var videos = D.querySelectorAll('video');
+    var i, v;
+    for (i = 0; i < videos.length; i++) {
+      v = videos[i];
+      if (!v || v.__ytplusExplicitPause) continue;
+      if (!v.__ytplusUserPaused) continue;
+      v.__ytplusUserPaused = false;
+      v.__ytplusWantsPlay = true;
+    }
+  }
+
   function resumeWanted() {
     if (appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return;
     var videos = D.querySelectorAll('video');
@@ -954,6 +982,7 @@
     for (i = 0; i < videos.length; i++) {
       v = videos[i];
       if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
+      if (Number(v.playbackRate) === 0) continue;
       if (v.paused === false) continue;
       if (typeof v.play === 'function') {
         try { v.play(); } catch (e) { /* ignore */ }
@@ -974,14 +1003,13 @@
       return false;
     }
     acceptHold = true;
-    if (!CFG.backgroundPlay) {
-      appActive = false;
-      backgrounding = true;
-      return false;
-    }
+    // Flip flags before any resume work so a pause that arrives in this turn
+    // is blocked and not stored as a user pause.
     appActive = false;
     backgrounding = true;
+    if (!CFG.backgroundPlay) return false;
     log('hold for background');
+    clearSystemPauseMarks();
     resumeWanted();
     var video = activeVideo();
     if (video) publishNowPlaying(video, true);
@@ -989,17 +1017,18 @@
   }
 
   function recoverIfStalled() {
+    // Only resume a video that is actually paused. Never seek — assigning
+    // currentTime on return forces a multi-second rebuffer.
     if (!appActive || !CFG.backgroundPlay || !D || typeof D.querySelectorAll !== 'function') return 0;
     var videos = D.querySelectorAll('video');
     var n = 0;
-    var i, v, stalled;
+    var i, v;
     for (i = 0; i < videos.length; i++) {
       v = videos[i];
       if (!v || v.__ytplusUserPaused || !v.__ytplusWantsPlay) continue;
-      stalled = (typeof v.readyState === 'number' && v.readyState < 3) || !!v.__ytplusWaiting;
-      if (!stalled) continue;
-      log('recover stalled video');
-      try { v.currentTime = v.currentTime; } catch (e) { /* ignore */ }
+      if (Number(v.playbackRate) === 0) continue;
+      if (v.paused === false) continue;
+      log('recover paused video');
       if (typeof v.play === 'function') {
         try { v.play(); } catch (e2) { /* ignore */ }
       }
@@ -1033,7 +1062,14 @@
     if (typeof generation === 'number') retiredHold = generation;
     appActive = true;
     backgrounding = false;
-    if (!was) scheduleForegroundRecover();
+    // Only nudge if something is actually paused. A playing return (including
+    // after lock-screen controls) must not seek or call play().
+    if (!was) {
+      var video = activeVideo();
+      if (video && video.paused && !video.__ytplusUserPaused && video.__ytplusWantsPlay && Number(video.playbackRate) !== 0) {
+        scheduleForegroundRecover();
+      }
+    }
     log('appActive', true);
   }
 

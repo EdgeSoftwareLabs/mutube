@@ -385,14 +385,14 @@ function headerFixture() {
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.1.5'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.1.6'") !== -1, 'script version');
   check(scriptText.indexOf('seekOffset') === -1, 'lock-screen skip ignores the 5 second media-session offset');
   check(scriptText.indexOf('ytplus-header-actions') === -1, 'no header button row');
   check(scriptText.indexOf('Picture in Picture') === -1, 'no picture in picture button');
   check(scriptText.indexOf('Remove All') === -1, 'no Remove All button');
   check(scriptText.indexOf('ytplus-clear-history') === -1, 'no clear-history control');
 
-  check(load('youtu.be').YP.version === '1.1.5', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.1.6', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -400,7 +400,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.1.5', 'YouTubePlus exported');
+  check(YP && YP.version === '1.1.6', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -634,7 +634,11 @@ async function main() {
   YP.setAppActive(true);
   var userPaused = new win.HTMLMediaElement();
   userPaused.play();
+  var userTouch = env.listeners.filter(function (l) { return l.type === 'touchend'; }).pop();
+  check(!!userTouch, 'touchend is watched for user pause');
+  userTouch.fn({});
   userPaused.pause();
+  check(userPaused.__ytplusExplicitPause === true, 'a tapped pause is explicit');
   userPaused.paused = true;
   var pausedPlays = userPaused.plays;
   doc.querySelectorAll = function (sel) { return sel === 'video' ? [userPaused] : []; };
@@ -657,6 +661,9 @@ async function main() {
   var locked = new win.HTMLMediaElement();
   locked.play();
   var lockedPlays = locked.plays;
+  // Wait out the 200ms gesture window from the tapped pause above.
+  var gestureWait = Date.now() + 250;
+  while (Date.now() < gestureWait) { /* spin */ }
   locked.pause();
   check(locked.pauses == null, 'a pause while the page is hidden is not delivered');
   check(locked.__ytplusUserPaused !== true, 'a hidden-page pause is not a user pause');
@@ -674,14 +681,17 @@ async function main() {
   stalled.currentTime = 12;
   doc.querySelectorAll = function (sel) { return sel === 'video' ? [stalled] : []; };
   var stalledPlays = stalled.plays;
-  check(YP.recoverIfStalled() === 1, 'returning to the app nudges a stalled video');
+  check(YP.recoverIfStalled() === 1, 'returning to the app resumes a paused video');
   check(stalled.plays === stalledPlays + 1, 'the nudge calls play');
-  check(stalled.currentTime === 12, 'the nudge seeks in place');
-  stalled.readyState = 4;
-  stalled.__ytplusWaiting = false;
+  check(stalled.currentTime === 12, 'the nudge does not seek');
+  stalled.paused = false;
+  stalled.readyState = 2;
+  stalled.__ytplusWaiting = true;
   var settled = stalled.plays;
+  var settledTime = stalled.currentTime;
   check(YP.recoverIfStalled() === 0, 'a playing video is not nudged');
   check(stalled.plays === settled, 'foreground playback is not restarted');
+  check(stalled.currentTime === settledTime, 'a playing return does not seek');
   stalled.pause();
   stalled.readyState = 1;
   stalled.__ytplusWaiting = true;
@@ -738,6 +748,58 @@ async function main() {
   check(cycle.__ytplusUserPaused === false, 'lock screen play clears the user pause');
   check(cycle.playbackRate === 1, 'lock screen play restores the rate');
   check(cycle.plays === bgPlays + 1, 'lock screen play calls play() when the element is paused');
+  cycle.paused = false;
+  cycle.playbackRate = 1;
+  cycle.currentTime = 20;
+  cycle.readyState = 2;
+  cycle.__ytplusWaiting = true;
+  var returnPlays = cycle.plays;
+  var returnTime = cycle.currentTime;
+  YP.setAppActive(true);
+  check(cycle.plays === returnPlays, 'returning after lock-screen play does not call play');
+  check(cycle.currentTime === returnTime, 'returning after lock-screen play does not seek');
+  check(YP.recoverIfStalled() === 0, 'playing after lock-screen is not recovered');
+  check(cycle.pauses == null || cycle.pauses === bgPauses, 'returning after lock-screen does not pause');
+
+  // WebKit pause can race ahead of willResignActive. It must not stick as a
+  // user pause, or Home/app-switch audio stops.
+  var raced = new win.HTMLMediaElement();
+  raced.play();
+  raced.paused = false;
+  raced.playbackRate = 1;
+  raced.currentTime = 9;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [raced] : []; };
+  doc._ytSetRawVisibility(false);
+  var raceWait = Date.now() + 250;
+  while (Date.now() < raceWait) { /* spin past any prior tap window */ }
+  raced.pause();
+  check(raced.pauses === 1, 'a foreground race pause is delivered before hold');
+  check(raced.__ytplusUserPaused === true, 'race pause marks userPaused temporarily');
+  check(raced.__ytplusExplicitPause !== true, 'race pause is not an explicit user pause');
+  raced.paused = true;
+  var racedPlays = raced.plays;
+  check(YP.holdForBackground(true, 99) === true, 'hold after a raced pause');
+  check(raced.__ytplusUserPaused !== true, 'hold clears a non-explicit race pause');
+  check(raced.plays === racedPlays + 1, 'hold resumes after a raced system pause');
+  YP.setAppActive(true);
+
+  var parked = new win.HTMLMediaElement();
+  parked.play();
+  parked.paused = false;
+  parked.playbackRate = 1;
+  doc.querySelectorAll = function (sel) { return sel === 'video' ? [parked] : []; };
+  YP.setAppActive(false);
+  YP.remoteCommand('pause');
+  check(parked.playbackRate === 0, 'lock-screen park before return');
+  check(parked.__ytplusExplicitPause === true, 'lock-screen park is explicit');
+  var parkedPlays = parked.plays || 0;
+  var parkedTime = parked.currentTime;
+  YP.setAppActive(true);
+  check(parked.playbackRate === 0, 'returning leaves an explicit lock-screen pause parked');
+  check((parked.plays || 0) === parkedPlays, 'returning does not play an explicit lock-screen pause');
+  check(parked.currentTime === parkedTime, 'returning does not seek an explicit lock-screen pause');
+  check(YP.recoverIfStalled() === 0, 'recover skips a parked lock-screen pause');
+
   doc._ytSetRawVisibility(false);
   doc.querySelectorAll = function () { return []; };
   reset(YP);
@@ -905,7 +967,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.1.5', 'bundle info version');
+  check(info.iosScriptVersion === '1.1.6', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');
@@ -952,6 +1014,13 @@ async function main() {
   check(playbackSwift.indexOf('holdGeneration') !== -1, 'foreground cancels background retries');
   check(playbackSwift.indexOf('cancelNudges') !== -1, 'pending resume timers are cancelled');
   check(playbackSwift.indexOf('holdForBackground') !== -1, 'page is asked to resume');
+  check(playbackSwift.indexOf('nudgeNow') !== -1, 'first background hold is fired immediately');
+  check(playbackSwift.indexOf('prepareForForeground') !== -1, 'willEnterForeground only cancels holds');
+  check(playbackSwift.indexOf('willResignActiveNotification') !== -1, 'willResignActive starts the hold early');
+  check(playbackSwift.indexOf('willEnterForegroundNotification') !== -1, 'willEnterForeground is observed');
+  check(playbackSwift.indexOf('didBecomeActiveNotification') !== -1, 'didBecomeActive marks the page active');
+  check(contentSwift.indexOf('session.setAppActive(true)') === -1, 'ContentView does not double-set app active');
+  check(contentSwift.indexOf('PlaybackSession.returnToForeground()') !== -1, 'ContentView returns through PlaybackSession');
   check(webViewSwift.indexOf('forMainFrameOnly: false') !== -1, 'lifecycle script starts in every frame');
   check(webViewSwift.indexOf('forMainFrameOnly: true') === -1, 'document-start hook is not main-frame only');
   check(infoPlist.indexOf('youtubeplus') !== -1, 'custom URL scheme');

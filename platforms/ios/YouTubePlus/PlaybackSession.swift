@@ -66,17 +66,17 @@ enum PlaybackSession {
         // willResignActive and the scene phase both call this. Cancelling the
         // nudges we just scheduled drops the resume, and audio stops.
         if backgroundTask != .invalid {
-            nudge(true, holdGeneration)
+            nudgeNow(true, holdGeneration)
             return
         }
         holdGeneration += 1
         let generation = holdGeneration
-        if backgroundTask == .invalid {
-            backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "YouTubePlusAudio") {
-                endHold()
-            }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "YouTubePlusAudio") {
+            endHold()
         }
-        scheduleNudge(generation, 0, true)
+        // Fire the first hold immediately (not asyncAfter 0) so appActive /
+        // backgrounding flip before WebKit's pause lands in the page.
+        nudgeNow(true, generation)
         scheduleNudge(generation, 0.25, false)
         scheduleNudge(generation, 0.75, false)
         if !nowInfo.isEmpty {
@@ -84,26 +84,35 @@ enum PlaybackSession {
         }
     }
 
-    static func returnToForeground() {
-        // Drop every pending 250/750ms retry before the page can call play()
-        // over a pause the user just made. Do not do this while backgrounding.
+    /// Cancel background resume retries without telling the page it is active
+    /// yet. willEnterForeground runs while the document may still be hidden;
+    /// flipping appActive there makes YouTube see a real hidden flash and pause.
+    static func prepareForForeground() {
         holdGeneration += 1
-        let retired = holdGeneration
         cancelNudges()
         endHold()
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
-        webView?.evaluateJavaScript("window.YouTubePlus&&window.YouTubePlus.setAppActive(true, \(retired));", completionHandler: nil)
+    }
+
+    static func returnToForeground() {
+        prepareForForeground()
+        let retired = holdGeneration
+        webView?.evaluateJavaScript(
+            "window.YouTubePlus&&window.YouTubePlus.setAppActive(true, \(retired));",
+            completionHandler: nil
+        )
     }
 
     static func installLifecycle() {
         if lifecycleInstalled { return }
         lifecycleInstalled = true
         let center = NotificationCenter.default
+        // Earlier than didEnterBackground: set the backgrounded flag first.
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             holdInBackground()
         }
         center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
-            returnToForeground()
+            prepareForForeground()
         }
         center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             returnToForeground()
@@ -113,7 +122,7 @@ enum PlaybackSession {
     private static func scheduleNudge(_ generation: Int, _ delay: Double, _ force: Bool) {
         let item = DispatchWorkItem {
             guard generation == holdGeneration else { return }
-            nudge(force, generation)
+            nudgeNow(force, generation)
             if delay >= 0.75 { endHold() }
         }
         nudgeItems.append(item)
@@ -125,7 +134,7 @@ enum PlaybackSession {
         nudgeItems.removeAll()
     }
 
-    private static func nudge(_ force: Bool, _ generation: Int) {
+    private static func nudgeNow(_ force: Bool, _ generation: Int) {
         webView?.setAllMediaPlaybackSuspended(false, completionHandler: nil)
         let flag = force ? "true" : "false"
         webView?.evaluateJavaScript(

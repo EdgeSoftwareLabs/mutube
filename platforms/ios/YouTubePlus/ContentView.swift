@@ -70,9 +70,12 @@ struct ContentView: View {
 
     private func handleScene(_ phase: ScenePhase) {
         if phase == .active {
-            session.setAppActive(true)
+            // PlaybackSession.returnToForeground owns setAppActive(true) so we
+            // do not flip the visibility shim twice or before the page is shown.
             PlaybackSession.returnToForeground()
         } else {
+            // willResignActive already started the hold; reinforce it and set
+            // the JS backgrounded flag as early as the scene phase allows.
             PlaybackSession.keepAlive()
             session.setAppActive(false)
         }

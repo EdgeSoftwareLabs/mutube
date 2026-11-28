@@ -820,10 +820,11 @@ async function main() {
   check(settingsSwift.indexOf('YouTubeToggleStyle') !== -1, 'custom switch style');
   check(settingsSwift.indexOf('.tint(.white)') === -1, 'switches are not tinted white');
   check(settingsSwift.indexOf('#717171') !== -1, 'off track');
-  check(settingsSwift.indexOf('#aaaaaa') !== -1, 'on track');
-  check(settingsSwift.indexOf('#909090') !== -1, 'off knob');
-  check(settingsSwift.indexOf('#ffffff') !== -1, 'on knob');
-  check(settingsSwift.indexOf('offset(x: isOn ? 11 : -11)') !== -1, 'knob sits on the track end cap');
+  check(settingsSwift.indexOf('#f1f1f1') !== -1, 'on track');
+  check(settingsSwift.indexOf('#0f0f0f') !== -1, 'dark knob');
+  check(settingsSwift.indexOf('trackWidth: CGFloat = 48') !== -1, 'thick track');
+  check(settingsSwift.indexOf('knobSize: CGFloat = 22') !== -1, 'knob sits inside the track');
+  check(settingsSwift.indexOf('.shadow') === -1, 'switch has no shadow');
   check(settingsSwift.indexOf('.toggleStyle(YouTubeToggleStyle())') !== -1, 'style applies to every toggle');
   check(settingsSwift.indexOf('#available(iOS 17, *)') !== -1, 'isToggle is gated to iOS 17');
   check(settingsSwift.indexOf('accessibilityValue(isOn ? "On" : "Off")') !== -1, 'switch value is announced on iOS 16');

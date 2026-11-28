@@ -85,10 +85,10 @@ struct SettingsView: View {
     }
 }
 
-/// Matches the switches on m.youtube.com Settings (Notifications).
-/// YouTube's paper-toggle is a 36×14 track with a 20pt knob centered on the
-/// end caps, so the knob overhangs the bar. Dark-theme tokens:
-/// off track #717171, off knob #909090, on track #aaaaaa, on knob #ffffff.
+/// The newer YouTube/Google pill: a 48×26 track with the knob inside it.
+/// Off is a #717171 track and a #0f0f0f knob on the left. On is an #f1f1f1
+/// track and the same dark knob on the right. A 2pt gap leaves a ring of
+/// track color around the knob. No shadow and no border.
 struct YouTubeToggleStyle: ToggleStyle {
     @Environment(\.isEnabled) private var isEnabled
 
@@ -129,26 +129,25 @@ private extension View {
 private struct YouTubeSwitch: View {
     var isOn: Bool
 
-    // Points, matching YouTube's paper-toggle metrics.
-    private let trackWidth: CGFloat = 36
-    private let trackHeight: CGFloat = 14
-    private let knobSize: CGFloat = 20
+    // Points. Track is about 2:1. Knob diameter is the track height minus 4,
+    // so a 2pt margin shows the track color all the way around the knob.
+    private let trackWidth: CGFloat = 48
+    private let trackHeight: CGFloat = 26
+    private let knobSize: CGFloat = 22
+    private let inset: CGFloat = 2
 
     private var trackColor: Color {
         isOn
-            ? Color(red: 170.0 / 255.0, green: 170.0 / 255.0, blue: 170.0 / 255.0) // #aaaaaa
+            ? Color(red: 241.0 / 255.0, green: 241.0 / 255.0, blue: 241.0 / 255.0) // #f1f1f1
             : Color(red: 113.0 / 255.0, green: 113.0 / 255.0, blue: 113.0 / 255.0) // #717171
     }
 
     private var knobColor: Color {
-        isOn
-            ? Color.white // #ffffff
-            : Color(red: 144.0 / 255.0, green: 144.0 / 255.0, blue: 144.0 / 255.0) // #909090
+        Color(red: 15.0 / 255.0, green: 15.0 / 255.0, blue: 15.0 / 255.0) // #0f0f0f
     }
 
     var body: some View {
-        // The knob's center sits on the track's end cap (7pt in from each end),
-        // so a 20pt knob extends 3pt past the track horizontally and vertically.
+        let travel = (trackWidth - knobSize) / 2 - inset
         ZStack {
             Capsule()
                 .fill(trackColor)
@@ -156,10 +155,9 @@ private struct YouTubeSwitch: View {
             Circle()
                 .fill(knobColor)
                 .frame(width: knobSize, height: knobSize)
-                .shadow(color: Color.black.opacity(0.6), radius: 2.5, x: 0, y: 1)
-                .offset(x: isOn ? 11 : -11)
+                .offset(x: isOn ? travel : -travel)
         }
-        .frame(width: trackWidth + 6, height: knobSize)
+        .frame(width: trackWidth, height: trackHeight)
         .animation(.easeInOut(duration: 0.2), value: isOn)
     }
 }

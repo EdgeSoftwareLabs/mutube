@@ -1,9 +1,9 @@
 {
   "name": "YouTube +",
   "platform": "ios",
-  "iosScriptVersion": "1.0.2",
+  "iosScriptVersion": "1.0.3",
   "youtubePlusVersion": "1.1.0",
   "script": "youtube-plus-ios.js",
-  "scriptBytes": 38335,
+  "scriptBytes": 42131,
   "rules": 8
 }

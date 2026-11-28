@@ -223,12 +223,72 @@ function fatBrowse(n) {
   };
 }
 
+function headerNode() {
+  var el = {
+    id: '',
+    children: [],
+    style: {},
+    attrs: {},
+    parentNode: null,
+    firstChild: null,
+    nodeType: 1,
+    setAttribute: function (k, v) {
+      this.attrs[k] = v;
+      if (k === 'id') this.id = v;
+    },
+    getAttribute: function (k) { return this.attrs[k] || null; },
+    appendChild: function (child) {
+      child.parentNode = this;
+      this.children.push(child);
+      this.firstChild = this.children[0];
+    },
+    insertBefore: function (child, before) {
+      child.parentNode = this;
+      var at = this.children.indexOf(before);
+      if (at < 0) this.children.unshift(child);
+      else this.children.splice(at, 0, child);
+      this.firstChild = this.children[0];
+    },
+    querySelector: function (sel) {
+      var i, found;
+      if (sel === '#ytplus-header-actions' || sel === '[data-ytplus-action="pip"]') {
+        for (i = 0; i < this.children.length; i++) {
+          found = this.children[i].querySelector ? this.children[i].querySelector(sel) : null;
+          if (this.children[i].id === 'ytplus-header-actions' && sel === '#ytplus-header-actions') return this.children[i];
+          if (found) return found;
+        }
+      }
+      if (sel === '[data-ytplus-action="pip"]' && this.attrs['data-ytplus-action'] === 'pip') return this;
+      if (sel === '#ytplus-header-actions' && this.id === 'ytplus-header-actions') return this;
+      return null;
+    },
+    addEventListener: function () {}
+  };
+  return el;
+}
+
+function headerFixture() {
+  var search = headerNode();
+  search.setAttribute('aria-label', 'Search');
+  var host = headerNode();
+  host.id = 'buttons';
+  host.appendChild(search);
+  var doc = {
+    createElement: function () { return headerNode(); },
+    querySelector: function (sel) {
+      if (sel === 'ytm-mobile-topbar-renderer .header-buttons') return host;
+      return null;
+    }
+  };
+  return { doc: doc, host: host, search: search };
+}
+
 async function main() {
   var scriptText = fs.readFileSync(scriptPath, 'utf8');
   check(scriptText.indexOf('TizenTube') === -1, 'injected script must not name TizenTube');
-  check(scriptText.indexOf("var VERSION = '1.0.2'") !== -1, 'script version');
+  check(scriptText.indexOf("var VERSION = '1.0.3'") !== -1, 'script version');
 
-  check(load('youtu.be').YP.version === '1.0.2', 'youtu.be is hooked');
+  check(load('youtu.be').YP.version === '1.0.3', 'youtu.be is hooked');
   check(!load('accounts.google.com').YP, 'Google sign-in frame is not hooked');
   check(!load('example.com').YP, 'other sites are not hooked');
 
@@ -236,7 +296,7 @@ async function main() {
   var YP = env.YP;
   var win = env.win;
   var doc = env.doc;
-  check(YP && YP.version === '1.0.2', 'YouTubePlus exported');
+  check(YP && YP.version === '1.0.3', 'YouTubePlus exported');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk') === true, 'portrait watch page keeps the bottom bar');
   check(YP.isWatchPage('https://www.youtube.com/watch?v=abcdefghijk&pp=abc&si=xyz') === true, 'watch page with Google params');
   check(YP.isWatchPage('https://m.youtube.com/watch?v=abcdefghijk', { landscape: true }) === false, 'landscape video hides the bar');
@@ -248,6 +308,23 @@ async function main() {
   check(YP.isOpenAppLabel('Subscribe') === false, 'subscribe is not the open app pill');
   var pivot = YP.pivotTabs();
   check(pivot.length === 4 && pivot[0].label === 'Home' && pivot[1].label === 'Shorts' && pivot[2].label === 'Subscriptions' && pivot[3].label === 'You', 'bottom tabs');
+  var header = headerFixture();
+  check(YP.mountHeaderActions(header.doc) === true, 'settings mounts in the header');
+  check(header.host.children[0].id === 'ytplus-header-actions', 'settings is inserted ahead of Search');
+  check(header.host.children[1] === header.search, 'Search stays in the header');
+  var labels = header.host.children[0].children.map(function (b) { return b.attrs['aria-label']; });
+  check(labels.indexOf('YouTube + Settings') !== -1, 'header settings label');
+  check(labels.indexOf('Picture in Picture') !== -1, 'header pip label');
+  YP.mountHeaderActions(header.doc);
+  check(header.host.children.length === 2, 'header mount does not stack duplicate buttons');
+  YP.applySettings({ pictureInPicture: false });
+  YP.mountHeaderActions(header.doc);
+  var pip = header.host.children[0].children.filter(function (b) { return b.attrs['data-ytplus-action'] === 'pip'; })[0];
+  check(pip.style.display === 'none', 'pip hides in the header when the setting is off');
+  reset(YP);
+  var contentView = fs.readFileSync(path.join(root, 'platforms', 'ios', 'YouTubePlus', 'ContentView.swift'), 'utf8');
+  check(contentView.indexOf('padding(.top, 8)') === -1, 'settings is not overlaid on the top-right header');
+  check(contentView.indexOf('headerActionsMounted') !== -1, 'native fallback waits for the header button');
   check(env.win.__timers.length === 1 && env.win.__timers[0].ms === 1000, 'poll timer');
 
   reset(YP);
@@ -491,7 +568,7 @@ async function main() {
   check(fs.readFileSync(bundledScript, 'utf8') === scriptText, 'bundle matches the source script');
   check(fs.readFileSync(bundledRules, 'utf8') === fs.readFileSync(rulesPath, 'utf8'), 'bundle matches the rules');
   var info = JSON.parse(fs.readFileSync(bundleInfo, 'utf8'));
-  check(info.iosScriptVersion === '1.0.2', 'bundle info version');
+  check(info.iosScriptVersion === '1.0.3', 'bundle info version');
   check(info.name === 'YouTube +', 'bundle info name');
 
   var swiftDir = path.join(root, 'platforms', 'ios', 'YouTubePlus');

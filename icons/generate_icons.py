@@ -8,8 +8,11 @@ solid black; Top Shelf layout "T1c".
 Geometry is drawn from scratch here and is not traced from YouTube's logo.
 
 Requires: pip install cairosvg pillow numpy
-Usage:    python3 icons/generate_icons.py      (writes into icons/ and platforms/)
+Usage:    python3 icons/generate_icons.py            (writes into icons/ and platforms/)
+          python3 icons/generate_icons.py --samples
+              (writes icons/samples/ only; does not replace platform assets)
 """
+import argparse
 import io
 import json
 import shutil
@@ -17,7 +20,7 @@ from pathlib import Path
 
 import cairosvg
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "icons"
@@ -239,6 +242,109 @@ def square_icon(px):
 BUTTON_CX, BUTTON_CY = 182 + 660 / 2 - 35, 282 + 460 / 2 + 57
 
 
+# Play-triangle centroid on the 1024 grid after translate(-35, 57).
+# Vertices: (405, 461), (405, 677), (591, 569).
+TRI_CX = (405 + 405 + 591) / 3.0
+TRI_CY = (461 + 677 + 569) / 3.0
+# Button height as a fraction of the tile. The old badge icon used ~43% so the
+# plus could sit in the corner; without the badge the play button grows to the
+# proportion of the standard YouTube app icon.
+NEW_BUTTON_FRAC = 0.58
+
+
+def _place_logo(canvas, im, vis_ref_h):
+    """Put `im` (a 1024-grid render) so the play triangle's centroid is at the canvas center."""
+    k = im.width / 1024.0
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    layer.alpha_composite(im, (int(round(canvas.width / 2 - TRI_CX * k)),
+                                int(round(canvas.height / 2 - TRI_CY * k))))
+    with_glow(canvas, layer, vis_ref_h)
+    return canvas
+
+
+def nobadge_logo(button_h):
+    """Gradient play button, no plus badge. `button_h` is the button's pixel height."""
+    vis_h = button_h * 590 / 460.0
+    return logo_image(vis_h, badge=False)[0], button_h
+
+
+def square_icon_new(px, button_frac=NEW_BUTTON_FRAC):
+    """Sample icon: no badge, play button enlarged, triangle centroid at the tile center."""
+    S = 1024
+    im, button_h = nobadge_logo(button_frac * S)
+    c = _place_logo(black(S, S), im, button_h)
+    return c if px == S else c.resize((px, px), Image.LANCZOS)
+
+
+def youtube_proportion_reference(px, button_frac=NEW_BUTTON_FRAC):
+    """White rounded tile and a red play button at the same size and centering as square_icon_new.
+    A proportion reference for the App Store YouTube icon, not a copy of Google's artwork."""
+    S = 1024
+    button_h = button_frac * S
+    size = max(1, int(round(1024 * button_h / 460.0)))
+    mask = _svg_layer(_FILL_NO_BADGE, size)
+    red = Image.new("RGBA", (size, size), (255, 0, 0, 255))
+    red.putalpha(mask.split()[-1])
+    red.alpha_composite(_svg_layer(_WHITE_NO_BADGE, size))
+    tile = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    rmask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(rmask).rounded_rectangle((0, 0, S - 1, S - 1), radius=int(S * 0.223), fill=255)
+    tile.putalpha(rmask)
+    k = size / 1024.0
+    canvas = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    canvas.alpha_composite(tile)
+    canvas.alpha_composite(red, (int(round(S / 2 - TRI_CX * k)), int(round(S / 2 - TRI_CY * k))))
+    return canvas if px == S else canvas.resize((px, px), Image.LANCZOS)
+
+
+def greyscale_icon(img):
+    return ImageOps.grayscale(img.convert("RGB")).convert("RGB")
+
+
+def tvos_sample(w=1280, h=768):
+    """Apple TV icon layout (logo above the wordmark) using the no-badge play button."""
+    c = black(w, h)
+    button_h = 0.46 * h
+    im, _ = nobadge_logo(button_h)
+    k = im.width / 1024.0
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    # Triangle centered horizontally, sitting in the upper half above the wordmark.
+    layer.alpha_composite(im, (int(round(w / 2 - TRI_CX * k)), int(round(h * 0.40 - TRI_CY * k))))
+    with_glow(c, layer, button_h)
+    f = font(116 * h / 768)
+    x = w / 2 - f.getlength("YouTube +") / 2
+    ImageDraw.Draw(c).text((x, h * 0.865), "YouTube +", font=f, fill="#FFFFFF", anchor="ls")
+    return c
+
+
+def write_samples():
+    """Write preview PNGs under icons/samples/. Does not touch platform asset catalogs."""
+    out = ICONS / "samples"
+    out.mkdir(parents=True, exist_ok=True)
+    new1024 = square_icon_new(1024)
+    save(new1024, out / "new-icon-1024.png")
+    save(new1024.resize((180, 180), Image.LANCZOS), out / "new-icon-ios-180.png")
+    save(tvos_sample(), out / "new-tvos-1280x768.png")
+    save(greyscale_icon(new1024).resize((512, 512), Image.LANCZOS), out / "new-helper-greyscale-512.png")
+
+    old = square_icon(420)
+    new = new1024.resize((420, 420), Image.LANCZOS)
+    ref = youtube_proportion_reference(420)
+    gap, label_h, pad = 36, 64, 28
+    sheet = Image.new("RGB", (pad * 2 + 420 * 3 + gap * 2, pad + 420 + label_h), (24, 24, 24))
+    labels = ("Current", "New", "YouTube proportions")
+    tiles = (old.convert("RGB"), new.convert("RGB"), ref.convert("RGB"))
+    draw = ImageDraw.Draw(sheet)
+    f = font(28)
+    for i, (tile, label) in enumerate(zip(tiles, labels)):
+        x = pad + i * (420 + gap)
+        sheet.paste(tile, (x, pad))
+        tw = f.getlength(label)
+        draw.text((x + (420 - tw) / 2, pad + 420 + 18), label, font=f, fill="#FFFFFF")
+    save(sheet, out / "new-vs-old.png")
+    print("samples written to", out.relative_to(ROOT))
+
+
 def square_icon_centered(px):
     """Square E2 icon with the play button (not the button + badge box) exactly in the
     centre; the "+" badge overhangs towards the top-right corner. Used for Samsung
@@ -430,4 +536,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--samples", action="store_true",
+                    help="write the no-badge icon samples under icons/samples/ and leave platform assets unchanged")
+    args = ap.parse_args()
+    if args.samples:
+        write_samples()
+    else:
+        main()

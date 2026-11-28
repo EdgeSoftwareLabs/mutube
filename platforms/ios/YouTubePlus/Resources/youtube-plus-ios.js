@@ -23,7 +23,7 @@
   var W = typeof window !== 'undefined' ? window : this;
   if (W.__ytPlusIOSLoaded) return;
 
-  var VERSION = '1.0.2';
+  var VERSION = '1.0.3';
   var MARK = '__ytplusClean';
   var SPONSOR_API = 'https://sponsor.ajay.app/api/skipSegments';
   var DEARROW_API = 'https://sponsor.ajay.app/api/branding';
@@ -864,7 +864,7 @@
     if (!existing) {
       var style = D.createElement('style');
       style.id = 'ytplus-style';
-      style.textContent = 'html,body{background:#0f0f0f!important;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}';
+      style.textContent = 'html,body{background:#0f0f0f!important;}html.ytplus-watch-bar body{padding-bottom:52px!important;}[aria-label="Open App"],[aria-label="Open app"]{display:none!important;}#ytplus-header-actions{display:inline-flex;align-items:center;flex:0 0 auto;}#ytplus-header-actions button{flex:0 0 auto;width:40px;height:40px;margin:0 1px;padding:0;border:0;border-radius:20px;background:transparent;color:#f1f1f1;font:600 20px -apple-system,BlinkMacSystemFont,sans-serif;line-height:40px;}';
       try { parent.appendChild(style); } catch (e2) { /* ignore */ }
     }
     var hosts = ['https://i.ytimg.com', 'https://i9.ytimg.com', 'https://yt3.ggpht.com', 'https://yt3.googleusercontent.com'];
@@ -972,6 +972,90 @@
     return n;
   }
 
+  var HEADER_HOST_SELECTORS = [
+    'ytm-mobile-topbar-renderer .header-buttons',
+    'ytm-mobile-topbar-renderer .mobile-topbar-header-buttons',
+    'ytm-mobile-topbar-renderer #buttons',
+    'ytd-masthead #end #buttons',
+    'ytd-masthead #buttons'
+  ];
+
+  function findHeaderHost(doc) {
+    if (!doc || typeof doc.querySelector !== 'function') return null;
+    var i, el;
+    for (i = 0; i < HEADER_HOST_SELECTORS.length; i++) {
+      el = doc.querySelector(HEADER_HOST_SELECTORS[i]);
+      if (el) return el;
+    }
+    var search = doc.querySelector('ytm-mobile-topbar-renderer button[aria-label*="Search" i], ytm-mobile-topbar-renderer button[aria-label*="search" i], ytd-masthead button[aria-label*="Search" i]');
+    if (search && search.parentNode && search.parentNode.nodeType === 1) return search.parentNode;
+    return null;
+  }
+
+  function postToApp(payload) {
+    try {
+      if (W.webkit && W.webkit.messageHandlers && W.webkit.messageHandlers.ytplus) {
+        W.webkit.messageHandlers.ytplus.postMessage(payload);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function headerButton(doc, action, label, glyph) {
+    var button = doc.createElement('button');
+    button.type = 'button';
+    if (button.setAttribute) {
+      button.setAttribute('type', 'button');
+      button.setAttribute('data-ytplus-action', action);
+      button.setAttribute('aria-label', label);
+    }
+    button.textContent = glyph;
+    if (button.addEventListener) {
+      button.addEventListener('click', function (ev) {
+        if (ev && ev.preventDefault) ev.preventDefault();
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        postToApp({ type: action });
+      });
+    }
+    return button;
+  }
+
+  // Inserts Settings (and PiP) as the first items in YouTube's header button
+  // row, so Search and the other header controls stay in the layout and stay tappable.
+  function mountHeaderActions(doc) {
+    doc = doc || D;
+    if (!doc || typeof doc.createElement !== 'function') return false;
+    var host = findHeaderHost(doc);
+    if (!host) return false;
+    var existing = host.querySelector && host.querySelector('#ytplus-header-actions');
+    if (existing) {
+      var pipBtn = existing.querySelector && existing.querySelector('[data-ytplus-action="pip"]');
+      if (pipBtn && pipBtn.style) pipBtn.style.display = CFG.pictureInPicture ? '' : 'none';
+      return true;
+    }
+    var wrap = doc.createElement('span');
+    if (wrap.setAttribute) wrap.setAttribute('id', 'ytplus-header-actions');
+    wrap.id = 'ytplus-header-actions';
+    var pip = headerButton(doc, 'pip', 'Picture in Picture', '\u29C9');
+    if (pip.style) pip.style.display = CFG.pictureInPicture ? '' : 'none';
+    if (wrap.appendChild) {
+      wrap.appendChild(pip);
+      wrap.appendChild(headerButton(doc, 'settings', 'YouTube + Settings', '\u2699'));
+    }
+    if (host.insertBefore) host.insertBefore(wrap, host.firstChild || null);
+    else if (host.appendChild) host.appendChild(wrap);
+    return true;
+  }
+
+  var headerMounted = null;
+  function syncHeaderActions() {
+    var ok = false;
+    try { ok = mountHeaderActions(D); } catch (e) { ok = false; }
+    if (ok !== headerMounted) {
+      headerMounted = ok;
+      postToApp({ type: 'header', mounted: ok });
+    }
+  }
+
   function installWatchChrome() {
     if (!D || D.__ytplusWatch) return;
     D.__ytplusWatch = true;
@@ -983,9 +1067,10 @@
         else if (mq.addListener) mq.addListener(onChange);
       }
     } catch (e) { /* ignore */ }
-    if (D.addEventListener) D.addEventListener('yt-navigate-finish', function () { syncWatchBar(); hideOpenApp(); }, true);
+    if (D.addEventListener) D.addEventListener('yt-navigate-finish', function () { syncWatchBar(); hideOpenApp(); syncHeaderActions(); }, true);
     syncWatchBar();
     hideOpenApp();
+    syncHeaderActions();
   }
 
   function onTick() {
@@ -1009,6 +1094,7 @@
     }
     try { syncWatchBar(); } catch (e6) { /* ignore */ }
     try { hideOpenApp(); } catch (e7) { /* ignore */ }
+    try { syncHeaderActions(); } catch (e8) { /* ignore */ }
   }
 
   function startLoops() {
@@ -1061,6 +1147,8 @@
     isWatchPage: isWatchPage,
     isOpenAppLabel: isOpenAppLabel,
     pivotTabs: function () { return PIVOT_TABS; },
+    headerHostSelectors: function () { return HEADER_HOST_SELECTORS; },
+    mountHeaderActions: mountHeaderActions,
     stats: function () { return stats; },
     settings: function () { return CFG; }
   };

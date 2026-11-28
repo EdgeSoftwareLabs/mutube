@@ -6,6 +6,8 @@ final class WebSession: ObservableObject {
     @Published var url: URL
     @Published var canGoBack = false
     @Published var canGoForward = false
+    /// True once Settings sits in YouTube's header row, so the native fallback can hide.
+    @Published var headerActionsMounted = false
     let home: URL
     weak var webView: WKWebView?
 
@@ -105,6 +107,7 @@ extension YouTubeWebView {
         }
 
         func makeWebView() -> WKWebView {
+            session.headerActionsMounted = false
             WebCache.install()
             let config = WKWebViewConfiguration()
             config.websiteDataStore = .default()
@@ -212,11 +215,26 @@ extension YouTubeWebView {
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard settings.settings.debugLogging else { return }
-            if let body = message.body as? [String: Any], let text = body["message"] as? String {
+            guard let body = message.body as? [String: Any] else { return }
+            let type = body["type"] as? String
+            if type == "settings" {
+                onRequestSettings()
+                return
+            }
+            if type == "pip" {
+                session.requestPictureInPicture()
+                return
+            }
+            if type == "header" {
+                let mounted = body["mounted"] as? Bool ?? false
+                if session.headerActionsMounted != mounted {
+                    session.headerActionsMounted = mounted
+                }
+                return
+            }
+            guard settings.settings.debugLogging, type == "log" else { return }
+            if let text = body["message"] as? String {
                 NSLog("[YouTube+] %@", text)
-            } else {
-                NSLog("[YouTube+] %@", String(describing: message.body))
             }
         }
 

@@ -50,7 +50,7 @@ channel** stay as YouTube sends them.
 
 Ad Block, Picture in Picture, DeArrow, and Hide Shorts rebuild the web view so the new document-start configuration applies. SponsorBlock, Background Play, dislike counts, and debug logging apply immediately.
 
-The gear at the top right opens **YouTube + Settings**. A two-finger long-press does the same. Settings live in `UserDefaults`.
+**YouTube + Settings** is a button in YouTube's own header row, placed before Search, so Search and the other header buttons stay visible and tappable in portrait and landscape, on the feed and on a watch page. Until that header button is in the page, a fallback sits in a row under the page rather than on top of it. A two-finger long-press opens Settings as well. Settings live in `UserDefaults`.
 
 The in-app UI does not say TizenTube and has no social or support links. Credit for the TV userscript this project grew out of stays in the repo [NOTICE](../../NOTICE) and the root README.
 

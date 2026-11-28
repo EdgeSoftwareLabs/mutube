@@ -21,9 +21,15 @@ struct ContentView: View {
                 showSettings = true
             }
             .id(webToken)
-            controls
             if welcomeVisible {
                 welcomeToast
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            // Only while the in-header buttons are missing. This row sits under
+            // the page, so it never covers Search.
+            if !session.headerActionsMounted {
+                fallbackControls
             }
         }
         .preferredColorScheme(.dark)
@@ -37,8 +43,9 @@ struct ContentView: View {
         }
     }
 
-    private var controls: some View {
+    private var fallbackControls: some View {
         HStack(spacing: 8) {
+            Spacer()
             if settings.settings.pictureInPicture {
                 overlayButton("pip.enter", label: "Picture in Picture") {
                     session.requestPictureInPicture()
@@ -48,8 +55,9 @@ struct ContentView: View {
                 showSettings = true
             }
         }
-        .padding(.top, 8)
-        .padding(.trailing, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Theme.surface)
     }
 
     private var welcomeToast: some View {
